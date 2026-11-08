@@ -7,12 +7,12 @@ import { element } from "./xml.js";
 
 /**
  * How a group message is presented to the agent: a `<message>` element with time, message id (for `send`'s
- * `reply_to`), sender and, if it is meant for the bot, `addressed="true"`. Nickname and text come from
- * group members and are escaped, so they cannot forge tags. The group is implicit: each agent serves one.
+ * `reply_to`), `reply_to` (the id of the message it answers, replies only), sender and, if it is meant for the bot,
+ * `addressed="true"`. Nickname and text come from group members and are escaped, so they cannot forge tags. The group is implicit: each agent serves one.
  */
 export function formatPrompt(msg: GroupMessage, addressed = false): string {
   const time = new Date(msg.ts * 1000).toLocaleString("sv-SE");
-  return element("message", { time, id: msg.messageId, sender: msg.nickname, user_id: msg.userId, addressed: addressed ? "true" : undefined }, msg.text);
+  return element("message", { time, id: msg.messageId, reply_to: msg.replyToMessageId, sender: msg.nickname, user_id: msg.userId, addressed: addressed ? "true" : undefined }, msg.text);
 }
 
 /** The user turn for a batch: who the agent is on the platform, then one `<message>` per queued message. */

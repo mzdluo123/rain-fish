@@ -52,6 +52,11 @@ describe("formatPrompt", () => {
     expect(p).toMatch(/^<message time="[^"]+" id="4567" sender="Alice" user_id="42">\n你好\n<\/message>$/);
   });
 
+  it("names the message a reply answers, and only for replies", () => {
+    expect(formatPrompt({ ...msg("100", "好", "5"), replyToMessageId: "99" })).toMatch(/^<message time="[^"]+" id="5" reply_to="99" sender="Alice"/);
+    expect(formatPrompt(msg("100", "好", "5"))).not.toContain("reply_to");
+  });
+
   it("marks messages addressed to the bot", () => {
     expect(formatPrompt(msg("100", "x"), true)).toContain(' addressed="true">');
     expect(formatPrompt(msg("100", "x"))).not.toContain("addressed");
