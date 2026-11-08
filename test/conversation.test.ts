@@ -323,3 +323,41 @@ describe("event log", () => {
     expect(trace.records("turn.start")[0]!.prompt).toBe("你好呀");
   });
 });
+
+describe("reminder to send", () => {
+  const sendCall = (n: number): AgentMessage[] => [assistantCall(`c${n}`, "send", { text: "在" }), toolResultMsg(`c${n}`, "send", "Sent.")];
+  const prompts = (s: { state: { messages: AgentMessage[] } }) => s.state.messages.filter((m) => m.role === "user").map((m) => String(m.content));
+
+  it("an addressed batch answered with plain text gets exactly one reminder turn, whose send is what counts", async () => {
+    const { conv, session } = await setup({ script: (_p, n) => (n === 1 ? [assistantText("我在")] : sendCall(n)) });
+    await conv.ask("@你 ？", { addressed: true });
+    expect(prompts(session)).toHaveLength(2);
+    expect(prompts(session)[1]).toContain("没有调用 `send`");
+    expect(session.toolsPerPrompt[1]).toContain("send");
+  });
+
+  it("does not remind when the agent already sent, when nobody addressed it, or after one reminder", async () => {
+    const sent = await setup({ script: (_p, n) => sendCall(n) });
+    await sent.conv.ask("@你", { addressed: true });
+    expect(prompts(sent.session)).toHaveLength(1);
+
+    const chatter = await setup({ script: () => [assistantText("嗯")] });
+    await chatter.conv.ask("闲聊");
+    await chatter.conv.ask("@你", { addressed: false });
+    expect(prompts(chatter.session)).toHaveLength(2);
+
+    const stubborn = await setup({ script: () => [assistantText("还是文字")] });
+    await stubborn.conv.ask("@你", { addressed: true });
+    expect(prompts(stubborn.session)).toHaveLength(2);
+  });
+
+  it("a failed send does not count as sent; a failing reminder turn does not fail the run", async () => {
+    const failed = await setup({ script: (_p, n) => (n === 1 ? [assistantCall("c1", "send", { text: "x" }), { ...toolResultMsg("c1", "send", "offline"), isError: true } as AgentMessage, assistantText("发不出去")] : sendCall(n)) });
+    await failed.conv.ask("@你", { addressed: true });
+    expect(prompts(failed.session)).toHaveLength(2);
+
+    const flaky = await setup({ script: (_p, n) => (n === 1 ? [assistantText("我在")] : [assistantError("rate limited")]) });
+    expect(await flaky.conv.ask("@你", { addressed: true })).toBe("我在");
+    expect(prompts(flaky.session)).toHaveLength(1); // the failed reminder turn left no trace
+  });
+});

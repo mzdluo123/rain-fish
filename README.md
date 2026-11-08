@@ -39,7 +39,7 @@ Next to the human-readable log there is a machine-readable **event log**: one JS
 | QQ edge | `qq.connected`, `qq.disconnected`, `qq.lifecycle`, `qq.frame_invalid`, `qq.api` (action, latency, outcome) |
 | messages | `msg.in` (flags: self, mention, addressed, reply_to, queued), `msg.duplicate`, `msg.out` / `msg.out_failed` (per chunk) |
 | group state machine | `queue.add`, `queue.restore`, `queue.persist_failed`, `wake.scheduled` (drawn wait, mean, whether it replaced an earlier one), `wake.fire`, `group.state` (`idle` / `waiting` / `running` with the reason), `run.start` (batch size, ids, age of the oldest message), `run.end` (ok, duration, dropped, error) |
-| conversation | `session.start`, `conv.restore`, `turn.start` (context size), `turn.end` (duration, calls, persisted seq), `turn.rollback` (why a turn was discarded), `flush.start` / `flush.ok` / `flush.fail`, `compact.done` / `compact.skip` (tokens before/after), `conv.state` (`fresh` → `flushing` → `flushed` → `fresh`) |
+| conversation | `session.start`, `conv.restore`, `turn.start` (context size), `turn.end` (duration, calls, persisted seq), `turn.rollback` (why a turn was discarded), `turn.nudge` (addressed but no `send`: one reminder turn follows, `kind` = `nudge`), `flush.start` / `flush.ok` / `flush.fail`, `compact.done` / `compact.skip` (tokens before/after), `conv.state` (`fresh` → `flushing` → `flushed` → `fresh`) |
 | model and tools (from Pi) | `llm.response` (model, stop reason, tokens and cost, latency, tools requested, error), `llm.retry`, `tool.start` / `tool.end` (arguments summary, latency, error flag, result size, `terminate`), `pi.compaction.*` |
 | backfill | `backfill.start`, `backfill.done` (stored, pages, why it stopped), `backfill.skip`, `backfill.fail` |
 

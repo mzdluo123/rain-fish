@@ -3,6 +3,7 @@ import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { buildArchiveMessage, extendArchiveSource, serializeForArchive, type ArchiveBudget } from "./context/archive.js";
 import { estimateContextTokens, estimateMessageTokens, estimateTextTokens } from "./context/estimate.js";
 import { MEMORY_FLUSH_PROMPT } from "./context/memory.js";
+import { SEND_NUDGE_PROMPT } from "./context/nudge.js";
 import { pruneExpensive } from "./context/prune.js";
 import type { ConversationStore } from "./conversation-store.js";
 import { noopLogger } from "./logger.js";
@@ -58,12 +59,23 @@ export class PiConversation implements Conversation {
     return this.d.session;
   }
 
-  async ask(prompt: string, ctx: { run?: string } = {}): Promise<string> {
+  async ask(prompt: string, ctx: { run?: string; addressed?: boolean } = {}): Promise<string> {
     this.cur = { run: ctx.run };
     try {
       await this.flushMemoryIfNeeded(prompt);
       await this.compactIfNeeded(prompt);
-      return await this.runTurn(prompt, "message");
+      const first = await this.runTurn(prompt, "message");
+      if (!ctx.addressed || first.sent) return first.text;
+      // Someone addressed the agent, it wrote text instead of calling `send`: nobody saw it. One reminder turn; a failure of
+      // that extra turn is not fatal (the first turn is already persisted and was a valid run).
+      this.log.warn(`group ${this.d.groupId}: addressed but the agent did not call send; reminding it once`);
+      this.emit("turn.nudge", { reason: "addressed without send", dropped_chars: first.text.length });
+      try {
+        return (await this.runTurn(SEND_NUDGE_PROMPT, "nudge")).text;
+      } catch (err) {
+        this.log.warn(`group ${this.d.groupId}: reminder turn failed: ${err instanceof Error ? err.message : String(err)}`);
+        return first.text;
+      }
     } finally {
       this.cur = {};
     }
@@ -75,7 +87,7 @@ export class PiConversation implements Conversation {
   }
 
   /** One model turn: the prompt, the agent's whole tool loop, then persistence. A failed turn leaves no trace. */
-  private async runTurn(prompt: string, kind: "message" | "flush"): Promise<string> {
+  private async runTurn(prompt: string, kind: "message" | "flush" | "nudge"): Promise<{ text: string; sent: boolean }> {
     const state = this.d.session.agent.state;
     const from = state.messages.length;
     this.cur = { ...this.cur, turn: `t${++this.turnCount}`, kind };
@@ -110,7 +122,8 @@ export class PiConversation implements Conversation {
       final_chars: text.length,
       persisted_through_seq: this.seqs.at(-1),
     });
-    return text;
+    const sent = added.some((m) => m.role === "toolResult" && m.toolName === SEND_TOOL && !m.isError);
+    return { text, sent };
   }
 
   private get budget(): ArchiveBudget {

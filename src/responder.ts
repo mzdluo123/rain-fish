@@ -157,7 +157,7 @@ export class PiResponder implements GroupResponder {
         this.conversations.set(groupId, conversation);
         conversation.catch(() => this.conversations.delete(groupId)); // retry creation next time
       }
-      await (await conversation).ask(batch.map((p) => formatPrompt(p.msg, p.addressed)).join("\n\n"), { run });
+      await (await conversation).ask(batch.map((p) => formatPrompt(p.msg, p.addressed)).join("\n\n"), { run, addressed: batch.some((p) => p.addressed) });
     } catch (err) {
       error = err;
       this.log.error(`agent run failed in group ${groupId}, dropped ${batch.length} message(s): ${err instanceof Error ? err.message : String(err)}`);

@@ -287,9 +287,10 @@ export type ContextConfig = Config["context"];
 export interface Conversation {
   /**
    * Runs the agent on `prompt` and returns its final text (the group never sees it: only `send` posts).
-   * `run` correlates the turn's events with the responder's. Throws if the model call fails.
+   * `run` correlates the turn's events with the responder's. `addressed`: the batch @-mentions the agent or replies to
+   * it, so a turn that ends without `send` is followed by one reminder turn. Throws if the model call fails.
    */
-  ask(prompt: string, ctx?: { run?: string }): Promise<string>;
+  ask(prompt: string, ctx?: { run?: string; addressed?: boolean }): Promise<string>;
 }
 
 export type ConversationFactory = (groupId: string) => Promise<Conversation>;
