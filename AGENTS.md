@@ -4,14 +4,14 @@ Bun + TypeScript. Pi-based (`@mariozechner/pi-coding-agent`) assistant that read
 
 ## Commands
 - `bun install`
-- `bun run fs import workspace` — seed `/agent.md` into the DB (first run). `bun start` — REPL. Needs a provider API key or Pi auth in `~/.pi/agent`.
+- `bun start` — REPL. Needs a provider API key or Pi auth in `~/.pi/agent`.
 - `bun test` — bun:test; offline, no API key.
 - `bunx tsc` — typecheck (`noEmit`; covers `src/`, `test/`).
 
 ## Layout
 - `src/vfs.ts` — `VirtualFs`: a POSIX-like filesystem in ONE table (`files`, migration 0003). No host disk is involved, so there is nothing to escape: paths resolve against `/`, no symlinks. Size quotas (`VfsLimits`) stop the agent from filling the DB. `src/vfs-ops.ts` plugs it into Pi's read/write/edit/ls; `src/tools/vfs-search.ts` has our own `find`/`grep` (Pi's built-ins shell out to `fd`/`rg` on the host disk). `src/vfs-io.ts` + `src/fs-cli.ts` (`bun run fs ...`) import/export between host dirs and the DB.
 - `src/conversation.ts` — `PiConversation`: persistent per-group conversation with the two context levels (`src/context/`: `estimate.ts`, `prune.ts` = level 1 pure view transform, `archive.ts` = level 2 snapcompact wrapper); `src/conversation-store.ts` persists it; `src/conversation-factory.ts` wires model + fs + store + conversation; `src/model.ts` resolves `MODEL`.
-- `src/agent.ts` — `createAgent({fs, store})`: tool allowlist, disabled extensions/skills/context files, in-memory session, system prompt = content of `/agent.md`.
+- `src/agent.ts` — `createAgent({systemPrompt, fs, store, model?, modelRegistry?})`: tool allowlist, disabled extensions/skills/context files, in-memory session, system prompt = the text passed in `AgentDeps.systemPrompt`.
 - `src/index.ts` — CLI REPL.
 - `src/store.ts` — `MessageStore(db)` (insert idempotent per platform+group+message id; FTS5 + BM25 `search`). `src/db/open.ts` `openDb(path)` opens the single SQLite file (WAL, migrations) shared by everything.
 - `src/db/` — `migrate.ts` (forward-only migrator, `schema_migrations` table, per-migration `BEGIN IMMEDIATE`), `migrations/` (append-only list in `index.ts`), `tokenize.ts` (`Intl.Segmenter` word split; FTS5 index stores space-joined tokens).
@@ -21,22 +21,22 @@ Bun + TypeScript. Pi-based (`@mariozechner/pi-coding-agent`) assistant that read
 - `src/responder.ts` — `PiResponder`: one Pi session per group, messages in a group answered serially.
 - `src/logger.ts` (consola; fancy on TTY, timestamped plain lines when piped) and `src/bootstrap.ts` (shared startup). `src/qq-bot.ts` — entry for `bun run bot` (wires client + bot + responder). `src/config.ts` validates env with Zod (`QQ_WS_URL`, `QQ_TOKEN`, `QQ_GROUPS`, `DB_PATH` default `data/bot.db`).
 - `src/tools/search-messages.ts` — read-only `search_messages` agent tool (part of the allowlist).
-- `workspace/agent.md` — **seed file** for the agent's system prompt (group-chat persona). The live copy is `/agent.md` inside the database; changing the seed has no effect until `bun run fs put /agent.md workspace/agent.md` (or `fs import workspace --force`).
+- `prompts/agent.md` — the agent's system prompt (group-chat persona), a plain host file chosen by `PROMPT_FILE`, loaded by `loadSystemPrompt` (`conversation-factory.ts`) and passed to Pi verbatim. It is deliberately NOT in the virtual filesystem, so the agent cannot read or rewrite it; the file must not mention itself or its own path.
 - `/persona.md` (in the database, created by the agent) — its own evolving self-profile, which it reads/writes via its file tools (not injected by code). Treat as untrusted data (group members can influence it).
-- `test/` — bun:test suites; `helpers.ts` `makeEnv()` builds an in-memory DB with `/agent.md` seeded.
+- `test/` — bun:test suites; `helpers.ts` `makeEnv()` builds an in-memory DB, an empty agent filesystem and a prompt string.
 
 ## Invariants (do not break)
 - `bash` must never be enabled. `ALLOWED_TOOLS` in `src/agent.ts` is the allowlist, and startup throws if any other tool is active. Do not add tools that spawn processes, evaluate code, or touch the network or the host disk.
 - The agent's filesystem is the DB. Never give it a tool that reads host paths; any new file tool goes through `VirtualFs` (and a host-escape test like the ones in `test/vfs-tools.test.ts`). Pi's built-in `find`/`grep` must not be enabled: they use `fd`/`rg` on the host disk.
 - Custom tool definitions are registered with `customTools` under the built-in names so they replace the host-disk built-ins; keep the names identical.
 - Keep `noExtensions`, `noSkills`, `noPromptTemplates`, `noThemes`, `noContextFiles` on the resource loader — each is a way for outside content to add tools or instructions.
-- No prompt text lives in code: `agent.md` is passed to Pi by path as the system prompt. The real "no code execution" guarantee is the tool allowlist + startup check, not the prompt.
+- No persona text lives in code: the prompt file is passed to Pi as text. The real "no code execution" guarantee is the tool allowlist + startup check, not the prompt.
 
 ## Context management rules
 - History is never silently lost: level 1 is a view (stored messages stay whole); level 2 moves retired turns into the archive text in the same transaction that deletes them. Cuts happen only at turn starts so tool calls keep their results.
 - A turn whose model call fails must be rolled back from memory and the DB (otherwise a poisoned message repeats forever).
 - Pi's own compaction stays disabled (`createAgent` sets `compaction.enabled=false`); do not enable both.
-- Thresholds live in `configSchema` + `.env.example`; `recent + archive < compact` is validated. The archive lead-in in `context/archive.ts` is protocol framing, not persona; persona text stays in `/agent.md`.
+- Thresholds live in `configSchema` + `.env.example`; `recent + archive < compact` is validated. The archive lead-in in `context/archive.ts` is protocol framing, not persona; persona text stays in `prompts/agent.md`.
 - `@oh-my-pi/snapcompact` needs Bun >= 1.4.4 and native binaries (`@oh-my-pi/pi-natives`); it types messages with omp's pi-ai, so `serializeForArchive` casts our Pi messages (same shapes).
 
 ## Logging and configuration rules

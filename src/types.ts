@@ -120,6 +120,8 @@ export interface VfsOperations {
 // ---- agent -----------------------------------------------------------------------
 
 export interface AgentDeps {
+  /** The system prompt, used verbatim. */
+  systemPrompt: string;
   /** Model to use; omit for Pi's configured default. */
   model?: Model<any>;
   /** Registry the model came from (credentials lookup); omit to let Pi build its default. */

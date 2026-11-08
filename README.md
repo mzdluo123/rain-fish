@@ -4,7 +4,6 @@ Pi-based QQ group bot (Yukino). The agent can list/search/read/write/edit files 
 
 ```
 bun install
-bun run fs import workspace   # first run: seed /agent.md (the system prompt) into the database
 bun start                     # CLI REPL with the agent
 bun run bot                   # QQ bot (see below)
 bun test                      # bun:test, no API key needed
@@ -29,9 +28,9 @@ Credentials/model come from Pi's usual config (`~/.pi/agent`, or provider env va
 ## State in one file
 - `DB_PATH` (default `data/bot.db`). Back it up by copying the file (stop the bot first, or use SQLite's backup API; WAL mode adds `-wal`/`-shm` files while running).
 - Schema is managed by a small forward-only migrator (`src/db/migrations/`, applied on open).
-- **Filesystem**: table `files` (`src/vfs.ts`). Paths are absolute from `/`; `..` cannot leave the root; there is no host disk behind it. Default quotas: 1 MiB per file, 64 MiB total.
-- **System prompt**: `/agent.md` in that filesystem. The repo's `workspace/agent.md` is only the seed; edit it, then `bun run fs put /agent.md workspace/agent.md`. The agent can edit `/agent.md` itself (effective next session). Its own evolving self-profile is `/persona.md`, which `agent.md` tells it to read at the start of a conversation.
-- Manage files from the host: `bun run fs ls|cat|put|import|export|rm` (run `bun run fs` for usage). `import` keeps files that already exist unless `--force`, so re-seeding never clobbers what the agent wrote.
+- **Filesystem**: table `files` (`src/vfs.ts`). Paths are absolute from `/`; `..` cannot leave the root; there is no host disk behind it, and it starts empty. Default quotas: 1 MiB per file, 64 MiB total.
+- **System prompt**: the host file `prompts/agent.md` (`PROMPT_FILE`), used verbatim as the system prompt. It is not part of the agent's filesystem, so the agent cannot read or change it; edit it like any file in the repo (it is read when a group's conversation starts, so restart the bot to apply it everywhere). The agent's own evolving self-profile is `/persona.md` in its filesystem, which the prompt tells it to read at the start of a conversation.
+- Manage files from the host: `bun run fs ls|cat|put|import|export|rm` (run `bun run fs` for usage). `import` keeps files that already exist unless `--force`, so re-seeding never clobbers what the agent wrote. A fresh database needs no seeding.
 
 ## How it is locked down
 - `src/agent.ts`: tool allowlist `read, write, edit, ls, find, grep, search_messages`. Built-in `bash` is never enabled; extensions, skills, prompt templates and context files are off; startup aborts if any other tool is active.

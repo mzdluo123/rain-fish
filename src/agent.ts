@@ -19,16 +19,10 @@ import { createVfsOperations } from "./vfs-ops.js";
 /** The only tools the agent may ever use. `bash` is deliberately absent. */
 export const ALLOWED_TOOLS = ["read", "write", "edit", "ls", "find", "grep", SEARCH_TOOL] as const;
 
-/** System-prompt file inside the virtual filesystem. All prompt text lives there, none in code. */
-export const AGENT_FILE = "/agent.md";
-
 /** The agent's working directory is the root of its virtual filesystem. */
 const VFS_ROOT = "/";
 
-export async function createAgent({ fs, store, model, modelRegistry }: AgentDeps): Promise<{ session: AgentSession }> {
-  if (!fs.exists(AGENT_FILE)) {
-    throw new Error(`Missing ${AGENT_FILE} in the database. Seed it with: bun run fs import workspace`);
-  }
+export async function createAgent({ systemPrompt, fs, store, model, modelRegistry }: AgentDeps): Promise<{ session: AgentSession }> {
   const ops = createVfsOperations(fs);
 
   // Disable everything that could smuggle in extra tools or instructions
@@ -41,7 +35,7 @@ export async function createAgent({ fs, store, model, modelRegistry }: AgentDeps
     noPromptTemplates: true,
     noThemes: true,
     noContextFiles: true,
-    systemPrompt: fs.readText(AGENT_FILE),
+    systemPrompt, // pass the text itself: Pi would read a string that happens to be an existing path as a file
   });
   await resourceLoader.reload();
 

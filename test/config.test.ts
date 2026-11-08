@@ -3,11 +3,15 @@ import { loadConfig } from "../src/config.js";
 
 describe("loadConfig", () => {
   it("has working defaults", () => {
-    expect(loadConfig({})).toEqual({ wsUrl: "ws://127.0.0.1:3001", token: undefined, groups: undefined, dbPath: "data/bot.db", logLevel: "info", model: undefined, context: { recentTokens: 12_000, pruneMinTokens: 800, compactTokens: 60_000, archiveTokens: 20_000 } });
+    expect(loadConfig({})).toEqual({ wsUrl: "ws://127.0.0.1:3001", token: undefined, groups: undefined, promptFile: "prompts/agent.md", dbPath: "data/bot.db", logLevel: "info", model: undefined, context: { recentTokens: 12_000, pruneMinTokens: 800, compactTokens: 60_000, archiveTokens: 20_000 } });
   });
 
   it("treats empty values (KEY= in .env) as unset, so defaults apply", () => {
     expect(loadConfig({ QQ_TOKEN: "", QQ_GROUPS: "", DB_PATH: "  ", LOG_LEVEL: "", QQ_WS_URL: "" })).toEqual(loadConfig({}));
+  });
+
+  it("reads PROMPT_FILE", () => {
+    expect(loadConfig({ PROMPT_FILE: "/etc/yukino.md" }).promptFile).toBe("/etc/yukino.md");
   });
 
   it("parses the group allowlist, trimming blanks", () => {

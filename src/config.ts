@@ -17,6 +17,9 @@ export const configSchema = z
         const ids = (s ?? "").split(",").map((g) => g.trim()).filter(Boolean);
         return ids.length ? new Set(ids) : undefined;
       }),
+    // --- system prompt ---
+    /** Host file used verbatim as the agent's system prompt. It is not part of the agent's filesystem. */
+    PROMPT_FILE: z.string().min(1).default("prompts/agent.md"),
     // --- state / logging ---
     DB_PATH: z.string().min(1).default("data/bot.db"),
     LOG_LEVEL: z.enum(["silent", "error", "warn", "info", "debug"]).default("info"),
@@ -40,6 +43,7 @@ export const configSchema = z
     wsUrl: e.QQ_WS_URL,
     token: e.QQ_TOKEN,
     groups: e.QQ_GROUPS,
+    promptFile: e.PROMPT_FILE,
     dbPath: e.DB_PATH,
     logLevel: e.LOG_LEVEL,
     model: e.MODEL,
