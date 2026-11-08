@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { OneBotClient } from "../src/qq/client.js";
 import type { GroupMessage } from "../src/types.js";
+import { recordingLogger } from "./helpers.js";
 
 const groupEvent = (id: number, group: number, text: string) => ({
   post_type: "message", message_type: "group", message_id: id, group_id: group, user_id: 1, self_id: 10001,
@@ -37,11 +38,12 @@ function fakeNapCat(o: FakeOpts = {}) {
 
 function connect(port: number, extra: Partial<ConstructorParameters<typeof OneBotClient>[0]> = {}) {
   const received: GroupMessage[] = [];
-  const logs: string[] = [];
-  const client = new OneBotClient({ url: `ws://localhost:${port}`, onGroupMessage: (m) => void received.push(m), log: (m) => logs.push(m), minBackoffMs: 20, maxBackoffMs: 50, ...extra });
+  const rec = recordingLogger();
+  const logs = rec.messages;
+  const client = new OneBotClient({ url: `ws://localhost:${port}`, onGroupMessage: (m) => void received.push(m), logger: rec.logger, minBackoffMs: 20, maxBackoffMs: 50, ...extra });
   client.start();
   cleanup.push(() => client.stop());
-  return { client, received, logs };
+  return { client, received, logs, entries: rec.entries };
 }
 
 describe("receiving", () => {
@@ -57,20 +59,21 @@ describe("receiving", () => {
         ws.send(JSON.stringify(groupEvent(1, 100, "群里讨论牛奶")));
       },
     });
-    const { received, logs } = connect(server.port!, { token: "secret" });
+    const { received, logs, entries } = connect(server.port!, { token: "secret" });
     await until(() => received.some((m) => m.messageId === "1"));
     expect(received.map((m) => m.messageId).sort()).toEqual(["0", "1"]); // the `time: "yesterday"` event never arrived
     expect(received.find((m) => m.messageId === "1")).toMatchObject({ groupId: "100", text: "群里讨论牛奶", selfId: "10001" });
-    expect(logs.some((l) => l.includes("dropped invalid frame: group message: time"))).toBe(true);
+    expect(entries).toContainEqual({ level: "warn", msg: expect.stringContaining("dropped invalid frame: group message: time") });
+    expect(entries).toContainEqual({ level: "success", msg: expect.stringContaining("connected to ws://") });
     expect(seen.auth).toBe("Bearer secret");
   });
 
   it("a throwing handler does not break the connection", async () => {
     const server = fakeNapCat({ onOpen(ws) { ws.send(JSON.stringify(groupEvent(1, 1, "a"))); ws.send(JSON.stringify(groupEvent(2, 1, "b"))); } });
     const seen: string[] = [];
-    const { logs } = connect(server.port!, { onGroupMessage: (m) => { seen.push(m.text); throw new Error("boom"); } });
+    const { entries } = connect(server.port!, { onGroupMessage: (m) => { seen.push(m.text); throw new Error("boom"); } });
     await until(() => seen.length === 2);
-    expect(logs.filter((l) => l.includes("handler error: boom"))).toHaveLength(2);
+    expect(entries.filter((e) => e.level === "error" && e.msg.includes("handler error: boom"))).toHaveLength(2);
   });
 
   it("keeps retrying until the server is up, then receives", async () => {

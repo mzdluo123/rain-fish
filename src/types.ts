@@ -4,9 +4,11 @@
  * anything that crosses the WebSocket); everything else is declared here directly.
  */
 import type { Database } from "bun:sqlite";
-import type { AgentSession } from "@mariozechner/pi-coding-agent";
+import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import type { Model } from "@mariozechner/pi-ai";
 import type {
   EditOperations,
+  ModelRegistry,
   LsOperations,
   ReadOperations,
   WriteOperations,
@@ -14,11 +16,11 @@ import type {
 import type { z } from "zod";
 import type {
   apiResponseSchema,
-  configSchema,
   groupMessageEventSchema,
   outboundSegmentSchema,
   segmentSchema,
 } from "./qq/schemas.js";
+import type { configSchema } from "./config.js";
 import type { MessageStore } from "./store.js";
 import type { VirtualFs } from "./vfs.js";
 
@@ -118,6 +120,10 @@ export interface VfsOperations {
 // ---- agent -----------------------------------------------------------------------
 
 export interface AgentDeps {
+  /** Model to use; omit for Pi's configured default. */
+  model?: Model<any>;
+  /** Registry the model came from (credentials lookup); omit to let Pi build its default. */
+  modelRegistry?: ModelRegistry;
   /** The agent's whole filesystem (in the same SQLite file as everything else). */
   fs: VirtualFs;
   /** Read-only message search is exposed to the agent as `search_messages`. */
@@ -139,6 +145,21 @@ export type Frame =
   | { kind: "lifecycle"; selfId: string; subType: string }
   | { kind: "ignored" }
   | { kind: "invalid"; reason: string };
+
+// ---- logging ---------------------------------------------------------------------
+
+/** What the program needs from a logger (satisfied by consola; tests pass a recording fake). */
+export interface Logger {
+  debug(msg: string): void;
+  info(msg: string): void;
+  success(msg: string): void;
+  warn(msg: string): void;
+  error(msg: string): void;
+  /** A child logger whose lines are prefixed with `tag`. */
+  withTag(tag: string): Logger;
+}
+
+export type LogLevel = Config["logLevel"];
 
 // ---- core (the only shapes the bot logic ever sees) --------------------------------
 
@@ -171,7 +192,7 @@ export interface BotOptions {
   api: QQApi;
   /** Only handle these group ids; omit for all groups. */
   groups?: ReadonlySet<string>;
-  log?: (msg: string) => void;
+  logger?: Logger;
 }
 
 export interface OneBotClientOptions {
@@ -184,7 +205,7 @@ export interface OneBotClientOptions {
   minBackoffMs?: number;
   maxBackoffMs?: number;
   requestTimeoutMs?: number;
-  log?: (msg: string) => void;
+  logger?: Logger;
 }
 
 export interface PendingRequest {
@@ -193,5 +214,28 @@ export interface PendingRequest {
   timer: ReturnType<typeof setTimeout>;
 }
 
-/** Creates (or restores) the agent conversation for one group. */
-export type SessionFactory = (groupId: string) => Promise<AgentSession>;
+
+// ---- model & context management ---------------------------------------------------
+
+export type ContextConfig = Config["context"];
+
+/** One agent conversation (a group's, or the CLI's). */
+export interface Conversation {
+  /** Sends `prompt` and returns the reply text (empty = nothing to say). Throws if the model call fails. */
+  ask(prompt: string): Promise<string>;
+}
+
+export type ConversationFactory = (groupId: string) => Promise<Conversation>;
+
+/** An agent message as persisted in the database, in conversation order. */
+export interface StoredAgentMessage {
+  seq: number;
+  message: AgentMessage;
+}
+
+/** The compacted older history of a conversation: serialized text, rendered on demand. */
+export interface StoredArchive {
+  /** Messages with seq <= throughSeq are represented by `sourceText` instead of being stored. */
+  throughSeq: number;
+  sourceText: string;
+}

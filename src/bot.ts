@@ -1,4 +1,5 @@
-import type { BotOptions, GroupMessage, OutboundSegment } from "./types.js";
+import { noopLogger } from "./logger.js";
+import type { BotOptions, GroupMessage, Logger, OutboundSegment } from "./types.js";
 
 /** QQ rejects very long messages; stay well under the limit. */
 export const MAX_REPLY_CHARS = 1500;
@@ -25,10 +26,10 @@ export function splitReply(text: string, max = MAX_REPLY_CHARS): string[] {
  */
 export class Bot {
   private readonly sent = new Set<string>(); // "group:messageId" of messages this bot sent
-  private readonly log: (msg: string) => void;
+  private readonly log: Logger;
 
   constructor(private readonly opts: BotOptions) {
-    this.log = opts.log ?? (() => {});
+    this.log = (opts.logger ?? noopLogger).withTag("bot");
   }
 
   async handleGroupMessage(msg: GroupMessage): Promise<void> {
@@ -36,13 +37,15 @@ export class Bot {
     if (groups && !groups.has(msg.groupId)) return;
 
     store.insert(msg);
+    this.log.debug(`group ${msg.groupId} ${msg.nickname}(${msg.userId}): ${msg.text.slice(0, 80)}`);
     if (msg.isSelf || !this.isAddressedToBot(msg)) return;
+    this.log.info(`answering ${msg.nickname} in group ${msg.groupId}`);
 
     let reply: string;
     try {
       reply = await this.opts.responder.respond(msg);
     } catch (err) {
-      this.log(`responder failed in group ${msg.groupId}: ${err instanceof Error ? err.message : String(err)}`);
+      this.log.error(`responder failed in group ${msg.groupId}: ${errText(err)}`);
       return;
     }
     const chunks = splitReply(reply);
@@ -53,10 +56,11 @@ export class Bot {
         const { messageId } = await this.opts.api.sendGroupMessage(msg.groupId, segments);
         this.remember(msg.groupId, messageId);
       } catch (err) {
-        this.log(`send failed in group ${msg.groupId}: ${err instanceof Error ? err.message : String(err)}`);
+        this.log.error(`send failed in group ${msg.groupId}: ${errText(err)}`);
         return;
       }
     }
+    this.log.success(`replied in group ${msg.groupId} to ${msg.nickname} (${reply.length} chars, ${chunks.length} message(s))`);
   }
 
   private isAddressedToBot(msg: GroupMessage): boolean {
@@ -71,3 +75,5 @@ export class Bot {
     if (this.sent.size > MAX_REMEMBERED_SENT) this.sent.delete(this.sent.values().next().value!);
   }
 }
+
+const errText = (err: unknown) => (err instanceof Error ? err.message : String(err));

@@ -7,6 +7,7 @@ import {
   DefaultResourceLoader,
   getAgentDir,
   SessionManager,
+  SettingsManager,
   type AgentSession,
   type ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
@@ -24,7 +25,7 @@ export const AGENT_FILE = "/agent.md";
 /** The agent's working directory is the root of its virtual filesystem. */
 const VFS_ROOT = "/";
 
-export async function createAgent({ fs, store }: AgentDeps): Promise<{ session: AgentSession }> {
+export async function createAgent({ fs, store, model, modelRegistry }: AgentDeps): Promise<{ session: AgentSession }> {
   if (!fs.exists(AGENT_FILE)) {
     throw new Error(`Missing ${AGENT_FILE} in the database. Seed it with: bun run fs import workspace`);
   }
@@ -44,10 +45,17 @@ export async function createAgent({ fs, store }: AgentDeps): Promise<{ session: 
   });
   await resourceLoader.reload();
 
+  // Context is managed by PiConversation (prune + snap-compact); Pi's own LLM-summary compaction must not also run.
+  const settingsManager = SettingsManager.create(VFS_ROOT, getAgentDir());
+  settingsManager.applyOverrides({ compaction: { enabled: false } });
+
   const allowed: string[] = [...ALLOWED_TOOLS];
   const { session } = await createAgentSession({
     cwd: VFS_ROOT,
     resourceLoader,
+    settingsManager,
+    ...(model ? { model } : {}), // omitted: Pi picks its configured default
+    ...(modelRegistry ? { modelRegistry } : {}),
     sessionManager: SessionManager.inMemory(VFS_ROOT),
     // Allowlist: built-in `bash` is never enabled.
     tools: allowed,

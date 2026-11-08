@@ -127,28 +127,3 @@ export const sendGroupMsgRequestSchema = z.object({
 });
 
 export const sendGroupMsgDataSchema = z.object({ message_id: idSchema });
-
-// ---- configuration (environment) --------------------------------------------------
-
-export const configSchema = z
-  .object({
-    QQ_WS_URL: z
-      .url()
-      .refine((u) => /^wss?:\/\//.test(u), "must be a ws:// or wss:// URL")
-      .default("ws://127.0.0.1:3001"),
-    QQ_TOKEN: z.string().min(1).optional(),
-    QQ_GROUPS: z
-      .string()
-      .optional()
-      .transform((s) => {
-        const ids = (s ?? "").split(",").map((g) => g.trim()).filter(Boolean);
-        return ids.length ? new Set(ids) : undefined;
-      }),
-    DB_PATH: z.string().min(1).default("data/bot.db"),
-  })
-  .transform((e) => ({
-    wsUrl: e.QQ_WS_URL,
-    token: e.QQ_TOKEN,
-    groups: e.QQ_GROUPS,
-    dbPath: e.DB_PATH,
-  }));

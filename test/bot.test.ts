@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { Bot, MAX_REPLY_CHARS, splitReply } from "../src/bot.js";
 import { openDb } from "../src/db/open.js";
 import { MessageStore } from "../src/store.js";
+import { recordingLogger } from "./helpers.js";
 import type { GroupMessage, GroupResponder, OutboundSegment, QQApi } from "../src/types.js";
 
 const SELF = "10001";
@@ -15,7 +16,8 @@ function setup(opts: { reply?: string | Error; sendFails?: boolean; groups?: Set
   const store = new MessageStore(openDb(":memory:"));
   const asked: GroupMessage[] = [];
   const sent: { groupId: string; message: OutboundSegment[] }[] = [];
-  const logs: string[] = [];
+  const rec = recordingLogger();
+  const logs = rec.messages;
   const responder: GroupResponder = {
     async respond(m) {
       asked.push(m);
@@ -31,8 +33,8 @@ function setup(opts: { reply?: string | Error; sendFails?: boolean; groups?: Set
       return { messageId: String(++nextId) };
     },
   };
-  const bot = new Bot({ store, responder, api, groups: opts.groups, log: (l) => logs.push(l) });
-  return { bot, store, asked, sent, logs };
+  const bot = new Bot({ store, responder, api, groups: opts.groups, logger: rec.logger });
+  return { bot, store, asked, sent, logs, entries: rec.entries };
 }
 
 describe("Bot", () => {
@@ -98,10 +100,10 @@ describe("Bot", () => {
   it("contains responder and send failures: logs, does not throw", async () => {
     const a = setup({ reply: new Error("LLM down") });
     await a.bot.handleGroupMessage(msg({ mentionsSelf: true }));
-    expect(a.logs.join()).toContain("LLM down");
+    expect(a.entries).toContainEqual({ level: "error", msg: expect.stringContaining("LLM down") });
     const b = setup({ sendFails: true });
     await b.bot.handleGroupMessage(msg({ mentionsSelf: true }));
-    expect(b.logs.join()).toContain("offline");
+    expect(b.entries).toContainEqual({ level: "error", msg: expect.stringContaining("offline") });
   });
 });
 

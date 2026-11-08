@@ -11,7 +11,20 @@ bun test                      # bun:test, no API key needed
 bunx tsc                      # typecheck
 ```
 
+Configuration: `cp .env.example .env` and edit. Bun loads `.env` automatically (no dotenv dependency); real environment variables override it, and `KEY=` with an empty value counts as unset. Every setting is validated at startup. `.env` is git-ignored, `.env.example` documents every variable.
+
 Credentials/model come from Pi's usual config (`~/.pi/agent`, or provider env vars such as `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`).
+
+## Model and context management
+- `MODEL=provider/model-id` picks the model (empty = Pi's default). Unknown model: startup stops and lists some known ones; a model without credentials only warns, so message ingestion keeps working.
+- Each group has one persistent agent conversation, stored in SQLite (`agent_messages`, `agent_archives`), so restarts resume it. A failed model call leaves no trace in it.
+- **Level 1 - pruning.** Before every model call, tool results and tool-call arguments of at least `CONTEXT_PRUNE_MIN_TOKENS` that are older than the newest `CONTEXT_RECENT_TOKENS` are replaced by a one-line placeholder. It is a view: the stored history is complete, and the call/result pairing is preserved.
+- **Level 2 - snap compaction.** When the estimated context passes `CONTEXT_COMPACT_TOKENS`, everything older than the recent window (cut at a turn boundary) is serialized and rendered into bitmap frames by [`@oh-my-pi/snapcompact`](https://www.npmjs.com/package/@oh-my-pi/snapcompact): local and deterministic, no LLM call. The frames replace the old messages; the archive text is what is persisted, and later compactions extend it within `CONTEXT_ARCHIVE_TOKENS` (oldest text falls off first). Models without image input get the same archive as plain text.
+- Token counts are estimates (CJK-aware), not provider usage; compaction is checked before each new message, not in the middle of a tool loop.
+- Pi's own LLM-summary compaction is switched off so the two never fight.
+
+## Logging
+[consola](https://github.com/unjs/consola): coloured badges/icons and timestamps on a terminal, one timestamped plain line per entry (`2026-11-08 21:06:48 WARN    [qq] ...`) when piped or redirected, errors/warnings on stderr. `LOG_LEVEL=silent|error|warn|info|debug` (debug logs every stored message and each agent tool call). No `console.*` calls are left in `src/`; the only raw stdout writes are the REPL's streamed model text and `bun run fs ls|cat` data output.
 
 ## State in one file
 - `DB_PATH` (default `data/bot.db`). Back it up by copying the file (stop the bot first, or use SQLite's backup API; WAL mode adds `-wal`/`-shm` files while running).

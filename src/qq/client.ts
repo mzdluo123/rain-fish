@@ -1,4 +1,5 @@
-import type { ApiResponse, OneBotClientOptions, OutboundSegment, PendingRequest, QQApi } from "../types.js";
+import { noopLogger } from "../logger.js";
+import type { ApiResponse, Logger, OneBotClientOptions, OutboundSegment, PendingRequest, QQApi } from "../types.js";
 import { toGroupMessage } from "./convert.js";
 import { parseFrame } from "./frame.js";
 import { sendGroupMsgDataSchema, sendGroupMsgRequestSchema } from "./schemas.js";
@@ -18,14 +19,14 @@ export class OneBotClient implements QQApi {
   private readonly minBackoff: number;
   private readonly maxBackoff: number;
   private readonly requestTimeout: number;
-  private readonly log: (msg: string) => void;
+  private readonly log: Logger;
 
   constructor(private readonly opts: OneBotClientOptions) {
     this.minBackoff = opts.minBackoffMs ?? 1000;
     this.maxBackoff = opts.maxBackoffMs ?? 30_000;
     this.requestTimeout = opts.requestTimeoutMs ?? 10_000;
     this.backoff = this.minBackoff;
-    this.log = opts.log ?? (() => {});
+    this.log = (opts.logger ?? noopLogger).withTag("qq");
   }
 
   start(): void {
@@ -79,7 +80,7 @@ export class OneBotClient implements QQApi {
         const msg = toGroupMessage(frame.event);
         if (!msg) return;
         // Not awaited: a slow handler (an LLM call) must not stall the socket.
-        (async () => this.opts.onGroupMessage(msg))().catch((err) => this.log(`handler error: ${errText(err)}`));
+        (async () => this.opts.onGroupMessage(msg))().catch((err) => this.log.error(`handler error: ${errText(err)}`));
         return;
       }
       case "api_response": {
@@ -91,10 +92,10 @@ export class OneBotClient implements QQApi {
         return;
       }
       case "lifecycle":
-        this.log(`lifecycle ${frame.subType} (self ${frame.selfId})`);
+        this.log.info(`lifecycle ${frame.subType} (self ${frame.selfId})`);
         return;
       case "invalid":
-        this.log(`dropped invalid frame: ${frame.reason}`);
+        this.log.warn(`dropped invalid frame: ${frame.reason}`);
         return;
       case "ignored":
         return;
@@ -108,14 +109,14 @@ export class OneBotClient implements QQApi {
     this.ws = ws;
     ws.onopen = () => {
       this.backoff = this.minBackoff;
-      this.log(`connected to ${url}`);
+      this.log.success(`connected to ${url}`);
     };
     ws.onmessage = (ev) => this.handleFrame(ev.data);
     ws.onerror = () => {}; // always followed by onclose
     ws.onclose = () => {
       this.rejectAll(new Error("OneBot connection closed"));
       if (this.stopped) return;
-      this.log(`disconnected, retrying in ${this.backoff}ms`);
+      this.log.warn(`disconnected, retrying in ${this.backoff}ms`);
       this.timer = setTimeout(() => this.connect(), this.backoff);
       this.backoff = Math.min(this.backoff * 2, this.maxBackoff);
     };

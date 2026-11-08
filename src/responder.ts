@@ -1,5 +1,4 @@
-import type { AgentSession } from "@mariozechner/pi-coding-agent";
-import type { GroupMessage, GroupResponder, SessionFactory } from "./types.js";
+import type { Conversation, ConversationFactory, GroupMessage, GroupResponder } from "./types.js";
 
 /** How a group message is presented to the agent: who said it, where, when. */
 export function formatPrompt(msg: GroupMessage): string {
@@ -7,22 +6,12 @@ export function formatPrompt(msg: GroupMessage): string {
   return `[群 ${msg.groupId} · ${when}] ${msg.nickname}(${msg.userId}):\n${msg.text}`;
 }
 
-function lastAssistantText(session: AgentSession, from: number): string {
-  const msg = session.state.messages.slice(from).findLast((m) => m.role === "assistant");
-  if (!msg || msg.role !== "assistant") return "";
-  if (msg.stopReason === "error") throw new Error(msg.errorMessage ?? "agent error");
-  return msg.content
-    .map((c) => (c.type === "text" ? c.text : ""))
-    .join("")
-    .trim();
-}
-
 /** One agent conversation per group; messages within a group are answered strictly one at a time. */
 export class PiResponder implements GroupResponder {
-  private readonly sessions = new Map<string, Promise<AgentSession>>();
+  private readonly conversations = new Map<string, Promise<Conversation>>();
   private readonly queues = new Map<string, Promise<unknown>>();
 
-  constructor(private readonly createSession: SessionFactory) {}
+  constructor(private readonly createConversation: ConversationFactory) {}
 
   respond(msg: GroupMessage): Promise<string> {
     const prev = this.queues.get(msg.groupId) ?? Promise.resolve();
@@ -32,15 +21,12 @@ export class PiResponder implements GroupResponder {
   }
 
   private async run(msg: GroupMessage): Promise<string> {
-    let session = this.sessions.get(msg.groupId);
-    if (!session) {
-      session = this.createSession(msg.groupId);
-      this.sessions.set(msg.groupId, session);
-      session.catch(() => this.sessions.delete(msg.groupId)); // retry creation next time
+    let conversation = this.conversations.get(msg.groupId);
+    if (!conversation) {
+      conversation = this.createConversation(msg.groupId);
+      this.conversations.set(msg.groupId, conversation);
+      conversation.catch(() => this.conversations.delete(msg.groupId)); // retry creation next time
     }
-    const s = await session;
-    const from = s.state.messages.length;
-    await s.prompt(formatPrompt(msg));
-    return lastAssistantText(s, from);
+    return (await conversation).ask(formatPrompt(msg));
   }
 }

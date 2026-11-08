@@ -1,19 +1,16 @@
-import { createAgent } from "./agent.js";
 import { Bot } from "./bot.js";
-import { loadConfig } from "./config.js";
+import { bootstrap, orExit } from "./bootstrap.js";
+import { createPiConversationFactory } from "./conversation-factory.js";
 import { openDb } from "./db/open.js";
 import { OneBotClient } from "./qq/client.js";
 import { PiResponder } from "./responder.js";
 import { MessageStore } from "./store.js";
-import { VirtualFs } from "./vfs.js";
 
-const config = loadConfig();
-const log = (m: string) => console.log(`[qq] ${m}`);
+const { config, logger } = bootstrap();
 
-const db = openDb(config.dbPath); // messages, agent files, ... one SQLite file
-const fs = new VirtualFs(db);
+const db = openDb(config.dbPath); // messages, agent files, conversations, ... one SQLite file
 const store = new MessageStore(db);
-const responder = new PiResponder(async () => (await createAgent({ fs, store })).session);
+const responder = new PiResponder(orExit(logger, () => createPiConversationFactory(db, config, logger)));
 
 // The client and the bot reference each other: the client delivers messages, the bot sends replies through it.
 let bot: Bot;
@@ -21,13 +18,18 @@ const client = new OneBotClient({
   url: config.wsUrl,
   token: config.token,
   onGroupMessage: (msg) => bot.handleGroupMessage(msg),
-  log,
+  logger,
 });
-bot = new Bot({ store, responder, api: client, groups: config.groups, log });
+bot = new Bot({ store, responder, api: client, groups: config.groups, logger });
+
+logger.info(`database ${config.dbPath} · log level ${config.logLevel} · groups ${config.groups ? [...config.groups].join(",") : "all"}`);
 client.start();
 
-process.on("SIGINT", () => {
+const shutdown = () => {
+  logger.info("shutting down");
   client.stop();
   db.close();
   process.exit(0);
-});
+};
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
