@@ -18,7 +18,7 @@ beforeEach(async () => {
   env.fs.writeFile("/n.md", "alpha beta");
 });
 
-describe("edit needs the file in the context window", () => {
+describe("edit and overwriting write need the file in the context window", () => {
   it("is refused when the file was never read, and nothing changes", async () => {
     await expect(edit("/n.md")).rejects.toThrow(/have not read '\/n\.md'.*Call read/);
     expect(env.fs.readText("/n.md")).toBe("alpha beta");
@@ -86,10 +86,10 @@ describe("edit needs the file in the context window", () => {
     await expect(edit("/persona.md")).rejects.toThrow(/have not read/);
   });
 
-  it("overwriting with write and creating files stay free", async () => {
-    await call("write", { path: "/n.md", content: "fresh" });
+  it("creating a new file needs no read", async () => {
     await call("write", { path: "/new.md", content: "x" });
-    expect(env.fs.readText("/n.md")).toBe("fresh");
+    await call("write", { path: "/deep/er/new.md", content: "y" });
+    expect(env.fs.readText("/new.md")).toBe("x");
   });
 });
 
@@ -104,5 +104,46 @@ describe("lastSeen", () => {
     expect(lastSeen(s.agent.state.messages as never, "/a.md")).toBe(300);
     expect(lastSeen(s.agent.state.messages as never, "b.md")).toBe(500);
     expect(lastSeen(s.agent.state.messages as never, "/c.md")).toBeUndefined();
+  });
+});
+
+describe("write over an existing file", () => {
+  const overwrite = (p: string, content = "fresh") => call("write", { path: p, content });
+
+  it("is refused when the file was not read, and nothing changes", async () => {
+    await expect(overwrite("/n.md")).rejects.toThrow(/have not read '\/n\.md'/);
+    expect(env.fs.readText("/n.md")).toBe("alpha beta");
+  });
+
+  it("works after a read, and after the agent's own write (it knows what it put there)", async () => {
+    markSeen(session, "/n.md");
+    await overwrite("/n.md", "one");
+    markSeen(session, "/n.md", { name: "write" });
+    await overwrite("/n.md", "two");
+    expect(env.fs.readText("/n.md")).toBe("two");
+  });
+
+  it("follows the same rules as edit: cut context, a slice, a changed file", async () => {
+    markSeen(session, "/n.md", { args: { limit: 3 } });
+    await expect(overwrite("/n.md")).rejects.toThrow(/have not read/);
+    markSeen(session, "/n.md", { timestamp: Date.now() - 5_000 });
+    env.fs.writeFile("/n.md", "changed elsewhere");
+    await expect(overwrite("/n.md")).rejects.toThrow(/ESTALE/);
+    session.agent.state.messages = [];
+    await expect(overwrite("/n.md")).rejects.toThrow(/have not read/);
+    expect(env.fs.readText("/n.md")).toBe("changed elsewhere");
+  });
+
+  it("the profile and the wake rules too; a non-Markdown path reports its own error first", async () => {
+    env.fs.writeFile("/persona.md", "old self");
+    await expect(overwrite("/persona.md")).rejects.toThrow(/have not read/);
+    env.fs.writeFile("/x.txt", "a");
+    await expect(overwrite("/x.txt")).rejects.toThrow(/only Markdown/);
+  });
+
+  it("the content rules still apply after the read (a broken wake-rules table is refused)", async () => {
+    env.fs.writeFile(WAKE_RULES_PATH, renderWakeRules(DEFAULT_RULES));
+    markSeen(session, WAKE_RULES_PATH);
+    await expect(overwrite(WAKE_RULES_PATH, "no table")).rejects.toThrow(/no table found/);
   });
 });

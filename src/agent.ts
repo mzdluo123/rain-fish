@@ -18,7 +18,7 @@ import { createViewImageTool, VIEW_IMAGE_TOOL } from "./tools/view-image.js";
 import { canReadImages } from "./context/archive.js";
 import { createVfsFindTool, createVfsGrepTool } from "./tools/vfs-search.js";
 import type { AgentDeps } from "./types.js";
-import { assertSeenBeforeEdit } from "./context/read-guard.js";
+import { assertSeen } from "./context/read-guard.js";
 import { createVfsOperations } from "./vfs-ops.js";
 
 /** The only tools the agent may ever use. `bash` is deliberately absent. */
@@ -29,8 +29,8 @@ const VFS_ROOT = "/";
 
 export async function createAgent({ systemPrompt, fs, store, groupId, send, sendImage, images, budget, modelImage, model, modelRuntime, thinkingLevel }: AgentDeps): Promise<{ session: AgentSession }> {
   let current: AgentSession | undefined; // set right after the session exists; the tools below use it lazily
-  // An edit needs the file's current text in the context window: the guard looks at the session's own messages.
-  const ops = createVfsOperations(fs, { beforeEdit: (p) => assertSeenBeforeEdit(fs, current?.agent.state.messages ?? [], p) });
+  // An edit, or a write over an existing file, needs the file's current text in the context window: the guard looks at the session's own messages.
+  const ops = createVfsOperations(fs, { requireSeen: (p) => assertSeen(fs, current?.agent.state.messages ?? [], p) });
 
   // Disable everything that could smuggle in extra tools or instructions
   // (extensions can register bash-like tools; skills/context files come from the host disk).

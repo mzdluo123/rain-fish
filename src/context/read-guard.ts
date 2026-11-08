@@ -34,20 +34,20 @@ export function lastSeen(messages: readonly AgentMessage[], p: string): number |
 
 /**
  * Throws unless the agent has the current content of `p` in its context window: it must have read the file (or written / edited it)
- * since the context was last cut, and nobody changed the file after that. Used before an `edit`, which replaces text the agent
- * has to be able to see; the error says what to do.
+ * since the context was last cut, and nobody changed the file after that. Used before an `edit` and before a `write` over an existing
+ * file: both replace text the agent has to be able to see. The error says what to do.
  */
-export function assertSeenBeforeEdit(fs: VirtualFs, messages: readonly AgentMessage[], p: string): void {
+export function assertSeen(fs: VirtualFs, messages: readonly AgentMessage[], p: string): void {
   const n = path.posix.resolve("/", p);
   const seen = lastSeen(messages, n);
   if (seen === undefined) {
     throw new Error(
-      `EACCES: you have not read '${n}' in the part of the conversation you can still see (or only a slice of it), so it was not edited. ` +
-        `Call read on '${n}' first, in a step of its own before the edit, look at the current text, then edit it.`,
+      `EACCES: you have not read '${n}' in the part of the conversation you can still see (or only a slice of it), so it was not changed. ` +
+        `Call read on '${n}' first, in a step of its own before changing it, look at the current text, then edit or write it.`,
     );
   }
   const mtime = fs.stat(n)?.mtime; // seconds
   if (mtime !== undefined && mtime > Math.floor(seen / 1000)) {
-    throw new Error(`ESTALE: '${n}' was changed after you last saw it, so it was not edited. Call read on '${n}' again, then edit the current text.`);
+    throw new Error(`ESTALE: '${n}' was changed after you last saw it, so it was not changed. Call read on '${n}' again, then change the current text.`);
   }
 }

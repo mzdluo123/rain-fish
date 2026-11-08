@@ -31,10 +31,10 @@ export function assertAgentWritable(p: string, content: string | Uint8Array): vo
 }
 
 /**
- * Pi tool backends (read / write / edit / ls) on top of the virtual filesystem. `beforeEdit` runs first for every `edit` (after the
- * file is known to exist) and may throw to refuse it; the agent wires it to "the file must be in the context window" (`assertSeenBeforeEdit`).
+ * Pi tool backends (read / write / edit / ls) on top of the virtual filesystem. `requireSeen` runs first for every `edit` and for every `write` that would overwrite an existing
+ * file (not for creating one), and may throw to refuse it; the agent wires it to "the file must be in the context window" (`assertSeen`).
  */
-export function createVfsOperations(vfs: VirtualFs, opts: { beforeEdit?: (p: string) => void } = {}): VfsOperations {
+export function createVfsOperations(vfs: VirtualFs, opts: { requireSeen?: (p: string) => void } = {}): VfsOperations {
   const requireExists = (p: string) => {
     if (!vfs.exists(p)) throw new Error(`ENOENT: no such file or directory, '${VirtualFs.normalize(p)}'`);
   };
@@ -45,13 +45,19 @@ export function createVfsOperations(vfs: VirtualFs, opts: { beforeEdit?: (p: str
       detectImageMimeType: async () => null, // images are not returned inline
     },
     write: {
-      writeFile: async (p, content) => (assertAgentWritable(p, content), vfs.writeFile(p, content)),
+      writeFile: async (p, content) => {
+        const n = VirtualFs.normalize(p);
+        assertMarkdownPath(n);
+        if (vfs.stat(n)?.kind === "file") opts.requireSeen?.(n); // overwriting needs the current text in view; creating a file does not
+        assertAgentWritable(p, content);
+        vfs.writeFile(p, content);
+      },
       mkdir: async (dir) => vfs.mkdir(dir),
     },
     edit: {
       readFile: async (p) => vfs.readFile(p),
       writeFile: async (p, content) => (assertAgentWritable(p, content), vfs.writeFile(p, content)),
-      access: async (p) => (requireExists(p), assertMarkdownPath(VirtualFs.normalize(p)), opts.beforeEdit?.(p)),
+      access: async (p) => (requireExists(p), assertMarkdownPath(VirtualFs.normalize(p)), opts.requireSeen?.(p)),
     },
     ls: {
       exists: (p) => vfs.exists(p),
