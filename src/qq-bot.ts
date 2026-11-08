@@ -23,6 +23,10 @@ const imageStore = new ImageStore(db);
 const imageSource = config.images.maxBytes > 0 && config.images.maxPerRun > 0 ? createImageSource({ ...config.images, logger }) : undefined;
 // Pictures are kept as they arrive (so they outlive QQ's URLs); with IMAGE_STORE_MAX_BYTES=0 only the wake-up download remains.
 const pictures = config.images.maxBytes > 0 && config.images.storeMaxBytes > 0 ? createPictureArchive({ source: imageSource ?? createImageSource({ ...config.images, maxPerRun: 1, logger }), store: imageStore, maxBytes: config.images.storeMaxBytes, logger }) : undefined;
+if (config.images.storeMaxBytes >= 0) {
+  const evicted = imageStore.evict(config.images.storeMaxBytes); // the cap may have been lowered (or set to 0) since the last run
+  if (evicted > 0) logger.info(`deleted ${evicted} stored picture(s) to fit IMAGE_STORE_MAX_BYTES=${config.images.storeMaxBytes}`);
+}
 const makeConversation = await orExit(logger, () =>
   createPiConversationFactory(db, config, logger, (groupId, text, replyTo) => bot.sendText(groupId, text, replyTo), (groupId, imageId, text, replyTo) => bot.sendImage(groupId, imageId, text, replyTo), events),
 );

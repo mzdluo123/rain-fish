@@ -72,8 +72,27 @@ export class ImageStore {
     return (this.db.query("SELECT COALESCE(SUM(size), 0) AS n FROM images").get() as { n: number }).n;
   }
 
-  /** Deletes the least recently used pictures (and their message links) until at most `maxBytes` are stored. Returns how many went. */
+  /**
+   * Deletes the least recently used pictures (and their message links) until at most `maxBytes` are stored, then gives the freed
+   * pages back to the file system (the database file shrinks; without this it would only ever grow). Returns how many went.
+   */
   evict(maxBytes: number): number {
+    const removed = this.evictRows(maxBytes);
+    if (removed > 0) this.shrink();
+    return removed;
+  }
+
+  /** Hands free pages back to the OS and trims the write-ahead log. Best effort: a busy database just keeps the pages for reuse. */
+  private shrink(): void {
+    try {
+      this.db.run("PRAGMA incremental_vacuum");
+      this.db.run("PRAGMA wal_checkpoint(TRUNCATE)");
+    } catch {
+      /* the space is reused by the next pictures anyway */
+    }
+  }
+
+  private evictRows(maxBytes: number): number {
     return this.db
       .transaction(() => {
         let total = this.totalBytes();
