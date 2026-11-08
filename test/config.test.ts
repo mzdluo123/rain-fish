@@ -3,7 +3,7 @@ import { loadConfig } from "../src/config.js";
 
 describe("loadConfig", () => {
   it("has working defaults", () => {
-    expect(loadConfig({})).toEqual({ wsUrl: "ws://127.0.0.1:3001", token: undefined, groups: undefined, promptFile: "prompts/agent.md", dbPath: "data/bot.db", logLevel: "info", model: undefined, thinkingLevel: undefined, context: { recentTokens: 12_000, pruneMinTokens: 800, compactTokens: 60_000, archiveTokens: 20_000, flushRatio: 0.85 }, wake: { chatMeanMs: 30_000, addressedMeanMs: 2_000 }, backfill: { minMessages: 100, maxAgeSeconds: 5 * 86_400 }, trace: { enabled: true, dir: "data/logs", maxFileBytes: 20 * 1024 * 1024, maxFiles: 30, maxAgeDays: 14, compress: true, content: false } });
+    expect(loadConfig({})).toEqual({ wsUrl: "ws://127.0.0.1:3001", token: undefined, groups: undefined, promptFile: "prompts/agent.md", dbPath: "data/bot.db", logLevel: "info", model: undefined, thinkingLevel: undefined, context: { recentTokens: 12_000, pruneMinTokens: 800, pruneBatchBlocks: 4, compactTokens: 60_000, archiveTokens: 20_000, flushRatio: 0.85 }, wake: { chatMeanMs: 30_000, addressedMeanMs: 2_000 }, backfill: { minMessages: 100, maxAgeSeconds: 5 * 86_400 }, trace: { enabled: true, dir: "data/logs", maxFileBytes: 20 * 1024 * 1024, maxFiles: 30, maxAgeDays: 14, compress: true, content: false } });
   });
 
   it("treats empty values (KEY= in .env) as unset, so defaults apply", () => {
@@ -32,7 +32,7 @@ describe("loadConfig", () => {
   it("reads the model and context thresholds, with defaults for anything unset", () => {
     const c = loadConfig({ MODEL: "anthropic/claude-sonnet-4-5", CONTEXT_COMPACT_TOKENS: "90000", CONTEXT_RECENT_TOKENS: "8000" });
     expect(c.model).toBe("anthropic/claude-sonnet-4-5");
-    expect(c.context).toEqual({ recentTokens: 8000, pruneMinTokens: 800, compactTokens: 90_000, archiveTokens: 20_000, flushRatio: 0.85 });
+    expect(c.context).toEqual({ recentTokens: 8000, pruneMinTokens: 800, pruneBatchBlocks: 4, compactTokens: 90_000, archiveTokens: 20_000, flushRatio: 0.85 });
     expect(loadConfig({ MODEL: "openrouter/anthropic/claude-sonnet-4.5" }).model).toBe("openrouter/anthropic/claude-sonnet-4.5");
   });
 
@@ -89,5 +89,13 @@ describe("THINKING_LEVEL", () => {
     expect(loadConfig({ THINKING_LEVEL: "xhigh" }).thinkingLevel).toBe("xhigh");
     expect(loadConfig({ THINKING_LEVEL: "off" }).thinkingLevel).toBe("off");
     expect(() => loadConfig({ THINKING_LEVEL: "ultra" })).toThrow(/THINKING_LEVEL/);
+  });
+});
+
+describe("CONTEXT_PRUNE_BATCH_BLOCKS", () => {
+  it("defaults to 4 and must be a positive integer", () => {
+    expect(loadConfig({}).context.pruneBatchBlocks).toBe(4);
+    expect(loadConfig({ CONTEXT_PRUNE_BATCH_BLOCKS: "1" }).context.pruneBatchBlocks).toBe(1);
+    expect(() => loadConfig({ CONTEXT_PRUNE_BATCH_BLOCKS: "0" })).toThrow(/CONTEXT_PRUNE_BATCH_BLOCKS/);
   });
 });

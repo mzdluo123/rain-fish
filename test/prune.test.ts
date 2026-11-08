@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { buildArchiveMessage } from "../src/context/archive.js";
-import { pruneExpensive } from "../src/context/prune.js";
+import { pruneExpensive, type PruneState } from "../src/context/prune.js";
 import { assistantCall, assistantText, tokensOf, toolResultMsg, userMsg } from "./helpers.js";
 
 const opts = { recentTokens: 300, minBlockTokens: 500 };
@@ -65,5 +65,39 @@ describe("pruneExpensive (level 1)", () => {
     const archive = await buildArchiveMessage(tokensOf(3000), { model: undefined, archiveTokens: 100_000 });
     const out = pruneExpensive([archive, userMsg(tokensOf(600))], { recentTokens: 100, minBlockTokens: 10 });
     expect(out[0]).toBe(archive);
+  });
+});
+
+describe("pruneExpensive batching (keeps the prompt-cache prefix stable)", () => {
+  const o = { recentTokens: 300, minBlockTokens: 500, batchBlocks: 3 };
+  const bigTurn = (i: number) => [userMsg(`q${i}`), assistantCall(`c${i}`, "read", {}), toolResultMsg(`c${i}`, "read", tokensOf(1000))];
+  const filler = () => [userMsg(tokensOf(400)), assistantText(tokensOf(400))]; // pushes everything before it out of the recent window
+  const cleared = (out: unknown[]) => out.filter((m) => text(m).includes("已清理")).length;
+
+  it("clears nothing until `batchBlocks` big blocks are outside the window, then clears them all at once", () => {
+    const state: PruneState = { through: 0 };
+    let msgs = [...bigTurn(1), ...bigTurn(2), ...filler()];
+    expect(cleared(pruneExpensive(msgs, o, state))).toBe(0); // 2 eligible < 3
+    msgs = [...msgs, ...bigTurn(3), ...filler()];
+    expect(cleared(pruneExpensive(msgs, o, state))).toBe(3); // 3 eligible: the whole batch goes
+  });
+
+  it("a cleared block stays cleared and later big blocks do not change the earlier part of the view until the next batch", () => {
+    const state: PruneState = { through: 0 };
+    let msgs = [...bigTurn(1), ...bigTurn(2), ...bigTurn(3), ...filler()];
+    const first = pruneExpensive(msgs, o, state).map(text);
+    msgs = [...msgs, ...bigTurn(4), ...filler()];
+    const second = pruneExpensive(msgs, o, state).map(text);
+    expect(second.slice(0, first.length)).toEqual(first); // append-only: same prefix
+    expect(cleared(pruneExpensive(msgs, o, state))).toBe(3); // block 4 is eligible but alone (1 < 3)
+  });
+
+  it("estimates (commit=false) do not move the watermark", () => {
+    const state: PruneState = { through: 0 };
+    const msgs = [...bigTurn(1), ...bigTurn(2), ...bigTurn(3), ...filler()];
+    expect(cleared(pruneExpensive(msgs, o, state, false))).toBe(3);
+    expect(state.through).toBe(0);
+    pruneExpensive(msgs, o, state);
+    expect(state.through).toBeGreaterThan(0);
   });
 });

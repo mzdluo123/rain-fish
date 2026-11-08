@@ -51,7 +51,7 @@ function fakeSession(opts: { vision?: boolean; script?: Script } = {}) {
 
 // system overhead is ~2.5k tokens, so thresholds are chosen on top of that
 // flushRatio 10 = the memory flush never triggers here; it has its own suite below
-const ctx: ContextConfig = { recentTokens: 1500, pruneMinTokens: 400, compactTokens: 6000, archiveTokens: 3000, flushRatio: 10 };
+const ctx: ContextConfig = { recentTokens: 1500, pruneMinTokens: 400, pruneBatchBlocks: 1, compactTokens: 6000, archiveTokens: 3000, flushRatio: 10 };
 
 async function setup(over: { vision?: boolean; script?: Script; context?: Partial<ContextConfig>; db?: ReturnType<typeof openDb>; group?: string } = {}) {
   const db = over.db ?? openDb(":memory:");
@@ -79,16 +79,17 @@ describe("persistence", () => {
     expect(b.store.load("g1").messages.map((m) => m.seq)).toEqual([1, 2, 3, 4]);
   });
 
-  it("does not replay stored system messages (Pi derives the prompt and tool declarations itself)", async () => {
+  it("replays stored system messages too, so the transcript (prompt and tool declarations) is the same after a restart", async () => {
     const sys = { role: "system", content: "", timestamp: 1 } as unknown as AgentMessage;
     const a = await setup({ script: () => [sys, assistantText("好的")] });
     await a.conv.ask("你好");
     expect(roles(a.session)).toEqual(["user", "system", "assistant"]);
 
     const b = await setup({ db: a.db, script: () => [assistantText("再见")] });
-    expect(roles(b.session)).toEqual(["user", "assistant"]);
+    expect(roles(b.session)).toEqual(["user", "system", "assistant"]);
     await b.conv.ask("再来");
-    expect(roles(b.session)).toEqual(["user", "assistant", "user", "assistant"]);
+    expect(b.session.promptSaw).toEqual([3]);
+    expect(roles(b.session)).toEqual(["user", "system", "assistant", "user", "assistant"]);
     expect(b.store.load("g1").messages.map((m) => m.seq)).toEqual([1, 2, 3, 4, 5]);
   });
 

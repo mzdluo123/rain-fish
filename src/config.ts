@@ -45,6 +45,8 @@ export const configSchema = z
     CONTEXT_RECENT_TOKENS: z.coerce.number().int().positive().default(12_000),
     /** Level 1: an old tool result / tool-call argument at least this big is cleared. */
     CONTEXT_PRUNE_MIN_TOKENS: z.coerce.number().int().positive().default(800),
+    /** Level 1 waits until this many clearable blocks are outside the recent window, then clears them all at once (each clearing breaks the prompt cache from that block on). */
+    CONTEXT_PRUNE_BATCH_BLOCKS: z.coerce.number().int().positive().default(4),
     /** Level 2: when the context grows past this, older history is snap-compacted into the archive. */
     CONTEXT_COMPACT_TOKENS: z.coerce.number().int().positive().default(60_000),
     /** Level 2: token budget of the archive (bitmap frames) that replaces the compacted history. */
@@ -87,6 +89,7 @@ export const configSchema = z
     context: {
       recentTokens: e.CONTEXT_RECENT_TOKENS,
       pruneMinTokens: e.CONTEXT_PRUNE_MIN_TOKENS,
+      pruneBatchBlocks: e.CONTEXT_PRUNE_BATCH_BLOCKS,
       compactTokens: e.CONTEXT_COMPACT_TOKENS,
       archiveTokens: e.CONTEXT_ARCHIVE_TOKENS,
       flushRatio: e.CONTEXT_FLUSH_RATIO,

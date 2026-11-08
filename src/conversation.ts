@@ -4,7 +4,7 @@ import { buildArchiveMessage, extendArchiveSource, serializeForArchive, type Arc
 import { estimateContextTokens, estimateMessageTokens, estimateTextTokens } from "./context/estimate.js";
 import { MEMORY_FLUSH_PROMPT } from "./context/memory.js";
 import { SEND_NUDGE_PROMPT } from "./context/nudge.js";
-import { pruneExpensive } from "./context/prune.js";
+import { pruneExpensive, type PruneState } from "./context/prune.js";
 import type { ConversationStore } from "./conversation-store.js";
 import { noopLogger } from "./logger.js";
 import { SEND_TOOL } from "./tools/send.js";
@@ -39,6 +39,8 @@ export class PiConversation implements Conversation {
   /** Ids of the run (from the responder) and turn in progress, stamped on every event emitted meanwhile. */
   private cur: { run?: string; turn?: string; kind?: string } = {};
   private turnCount = 0;
+  /** How far level-1 clearing has gone in the live transcript (see `PruneState`). */
+  private readonly pruneState: PruneState = { through: 0 };
 
   private constructor(private readonly d: PiConversationDeps) {
     this.log = (d.logger ?? noopLogger).withTag("context");
@@ -98,14 +100,14 @@ export class PiConversation implements Conversation {
       await this.d.session.prompt(prompt);
       added = state.messages.slice(from);
     } catch (err) {
-      this.setTranscript(state.messages.slice(0, from));
+      this.setTranscript(state.messages.slice(0, from), { resetPruning: false });
       this.emit("turn.rollback", { ms: Date.now() - t0, reason: "model call threw", error: err });
       throw err;
     }
     const last = added.findLast((m) => m.role === "assistant");
     if (!last || last.role !== "assistant" || last.stopReason === "error" || last.stopReason === "aborted") {
       // A failed turn leaves no trace: not in memory, not in the database.
-      this.setTranscript(state.messages.slice(0, from));
+      this.setTranscript(state.messages.slice(0, from), { resetPruning: false });
       const reason = last?.role === "assistant" ? (last.errorMessage ?? `model call ${last.stopReason}`) : "no reply from the model";
       this.emit("turn.rollback", { ms: Date.now() - t0, reason: last?.role === "assistant" ? last.stopReason : "no assistant message", error: reason, discarded_messages: added.length });
       throw new Error(reason);
@@ -131,8 +133,9 @@ export class PiConversation implements Conversation {
    * assigning to `state.messages` alone is silently undone (the model would see none of the history, or a rolled-back turn).
    * The SessionManager is in-memory; our own persistence is the database.
    */
-  private setTranscript(messages: AgentMessage[]): void {
+  private setTranscript(messages: AgentMessage[], opts: { resetPruning: boolean }): void {
     const { session } = this.d;
+    if (opts.resetPruning) this.pruneState.through = 0; // indices shift (restore, compaction); a rollback only truncates, so the watermark stays valid
     session.sessionManager.newSession();
     for (const m of messages) session.sessionManager.appendMessage(m as never);
     session.agent.state.messages = session.sessionManager.buildSessionProjection().messages;
@@ -143,10 +146,9 @@ export class PiConversation implements Conversation {
   }
 
   private async restore(): Promise<void> {
-    const { archive, messages: stored } = this.d.store.load(this.d.groupId);
-    // Pi 1.x keeps the system prompt and tool declarations as `system` messages in the transcript and re-derives them for
-    // every request. Replaying stored ones replaces the current prompt/tools (the request then goes out without them).
-    const messages = stored.filter((m) => m.message.role !== "system");
+    // Stored `system` messages carry the prompt sections and tool declarations. Replaying them keeps the request byte-identical
+    // to the one before the restart (without them Pi re-declares the tools in another shape and the whole prompt cache misses).
+    const { archive, messages } = this.d.store.load(this.d.groupId);
     const restored: AgentMessage[] = [];
     if (archive) {
       this.archiveSource = archive.sourceText;
@@ -157,7 +159,7 @@ export class PiConversation implements Conversation {
     this.seqs = messages.map((m) => m.seq);
     this.flushed = this.d.store.loadFlushed(this.d.groupId);
     if (restored.length > 0) {
-      this.setTranscript(restored);
+      this.setTranscript(restored, { resetPruning: true });
       this.log.info(`group ${this.d.groupId}: restored ${messages.length} message(s)${archive ? " + archive" : ""}`);
     }
   }
@@ -166,9 +168,8 @@ export class PiConversation implements Conversation {
   private installPruning(): void {
     const agent = this.d.session.agent;
     const previous = agent.transformContext;
-    const { recentTokens, pruneMinTokens } = this.d.context;
     agent.transformContext = async (messages, signal) =>
-      pruneExpensive(previous ? await previous(messages, signal) : messages, { recentTokens, minBlockTokens: pruneMinTokens });
+      pruneExpensive(previous ? await previous(messages, signal) : messages, this.pruneOptions, this.pruneState);
   }
 
   /**
@@ -207,9 +208,19 @@ export class PiConversation implements Conversation {
   }
 
   private contextTokens(prompt: string): number {
-    const { session, context: c } = this.d;
-    const view = pruneExpensive(session.agent.state.messages, { recentTokens: c.recentTokens, minBlockTokens: c.pruneMinTokens });
+    const { session } = this.d;
+    const view = pruneExpensive(session.agent.state.messages, this.pruneOptions, this.pruneState, false);
     return estimateContextTokens(session.systemPrompt, view) + estimateTextTokens(prompt);
+  }
+
+  /** Size of the context the next request would carry (the estimate the compaction thresholds use). */
+  estimateContext(): number {
+    return this.contextTokens("");
+  }
+
+  private get pruneOptions() {
+    const { recentTokens, pruneMinTokens, pruneBatchBlocks } = this.d.context;
+    return { recentTokens, minBlockTokens: pruneMinTokens, batchBlocks: pruneBatchBlocks };
   }
 
   /** Level 2: snap-compact older history once the (pruned) context passes the threshold. */
@@ -232,7 +243,7 @@ export class PiConversation implements Conversation {
     const archive = await buildArchiveMessage(source, this.budget);
 
     const throughSeq = this.seqs[cut - offset - 1]!;
-    this.setTranscript([archive, ...messages.slice(cut)]);
+    this.setTranscript([archive, ...messages.slice(cut)], { resetPruning: true });
     this.seqs = this.seqs.slice(cut - offset);
     this.archiveSource = source;
     this.archived = true;

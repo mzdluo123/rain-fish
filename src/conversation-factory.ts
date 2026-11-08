@@ -1,12 +1,9 @@
 import type { Database } from "bun:sqlite";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
 import { createAgent } from "./agent.js";
 import { PiConversation } from "./conversation.js";
 import { ConversationStore } from "./conversation-store.js";
-import { estimateContextTokens } from "./context/estimate.js";
-import { pruneExpensive } from "./context/prune.js";
 import { createModelRuntime, resolveModel } from "./model.js";
 import { MessageStore } from "./store.js";
 import { noopEventLog } from "./trace/event-log.js";
@@ -28,13 +25,6 @@ export function loadSystemPrompt(file: string): string {
   }
   if (!text.trim()) throw new Error(`System prompt file is empty: ${file}`);
   return text;
-}
-
-/** The same estimate the compaction thresholds use: system prompt + the pruned view of the live messages. */
-function estimateContext(session: AgentSession, config: Config): number {
-  const c = config.context;
-  const view = pruneExpensive(session.agent.state.messages, { recentTokens: c.recentTokens, minBlockTokens: c.pruneMinTokens });
-  return estimateContextTokens(session.systemPrompt, view);
 }
 
 /** One line per model call: model, stop reason, latency, context size (the estimate compaction uses) vs thresholds, API tokens, cost and what it produced. Text only at debug (never above). */
@@ -59,7 +49,7 @@ export async function createPiConversationFactory(db: Database, config: Config, 
   if (model && !runtime.hasConfiguredAuth(model.provider)) {
     logger.warn(`no credentials for provider "${model.provider}": replies will fail until an API key is configured (see .env.example)`);
   }
-  logger.info(`prompt ${config.promptFile} · model ${config.model ?? "(Pi default)"} · context: prune >${config.context.pruneMinTokens}t outside ${config.context.recentTokens}t recent, snap-compact at ${config.context.compactTokens}t`);
+  logger.info(`prompt ${config.promptFile} · model ${config.model ?? "(Pi default)"} · context: prune >${config.context.pruneMinTokens}t outside ${config.context.recentTokens}t recent (in batches of ${config.context.pruneBatchBlocks}), snap-compact at ${config.context.compactTokens}t`);
 
   const fs = new VirtualFs(db);
   const store = new MessageStore(db);
@@ -79,15 +69,16 @@ export async function createPiConversationFactory(db: Database, config: Config, 
       modelRuntime: runtime,
       thinkingLevel: config.thinkingLevel,
     });
+    const conversation = await PiConversation.create({ groupId, session, store: conversations, context: config.context, logger, events });
     let llmStarted = Date.now();
     session.subscribe((event) => {
       if (event.type === "tool_execution_start") toolLog.debug(`${event.toolName} ${JSON.stringify(event.args)}`);
       else if (event.type === "message_start" && event.message.role === "assistant") llmStarted = Date.now();
-      else if (event.type === "message_end" && event.message.role === "assistant") logLlmCall(llmLog, groupId, event.message, Date.now() - llmStarted, { tokens: estimateContext(session, config), window: session.model?.contextWindow, compact: config.context.compactTokens });
+      else if (event.type === "message_end" && event.message.role === "assistant") logLlmCall(llmLog, groupId, event.message, Date.now() - llmStarted, { tokens: conversation.estimateContext(), window: session.model?.contextWindow, compact: config.context.compactTokens });
       else if (event.type === "auto_retry_start") llmLog.warn(`group ${groupId}: retry ${event.attempt}/${event.maxAttempts} in ${event.delayMs}ms: ${event.errorMessage}`);
     });
     logger.info(`started agent session for ${groupId}`);
     events.emit("session.start", { group: groupId, model: session.model ? `${session.model.provider}/${session.model.id}` : undefined, tools: session.getActiveToolNames(), system_prompt_chars: session.systemPrompt.length });
-    return PiConversation.create({ groupId, session, store: conversations, context: config.context, logger, events });
+    return conversation;
   };
 }
