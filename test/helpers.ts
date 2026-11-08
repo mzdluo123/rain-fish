@@ -94,3 +94,42 @@ export function memoryEventLog(opts: { captureContent?: boolean } = {}) {
 /** Built-in model catalog only: no `models.json`, no network, empty credential file in a temp dir (never the real ~/.pi/agent). */
 export const testModelRuntime = (): Promise<ModelRuntime> =>
   ModelRuntime.create({ modelsPath: null, authPath: path.join(mkdtempSync(path.join(tmpdir(), "rainfish-auth-")), "auth.json"), refreshOnCreate: false });
+
+// ---- pictures -------------------------------------------------------------------------
+
+/** A real, decodable w x h RGBA PNG (a gradient, so it does not compress to nothing). */
+export function pngBytes(width: number, height: number): Buffer {
+  const crcTable = (() => {
+    const t: number[] = [];
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      t.push(c >>> 0);
+    }
+    return t;
+  })();
+  const crc = (b: Buffer) => {
+    let c = 0xffffffff;
+    for (const x of b) c = crcTable[(c ^ x) & 255]! ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type: string, data: Buffer) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type), data]);
+    const sum = Buffer.alloc(4);
+    sum.writeUInt32BE(crc(body));
+    return Buffer.concat([len, body, sum]);
+  };
+  const rows = Buffer.alloc(height * (1 + width * 4));
+  for (let y = 0; y < height; y++) {
+    const o = y * (1 + width * 4);
+    for (let x = 0; x < width; x++) rows.set([x & 255, y & 255, (x ^ y) & 255, 255], o + 1 + x * 4);
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", require("node:zlib").deflateSync(rows)), chunk("IEND", Buffer.alloc(0))]);
+}

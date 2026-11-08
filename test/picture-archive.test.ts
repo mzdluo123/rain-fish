@@ -61,3 +61,28 @@ describe("picture archive", () => {
     expect(formatPrompt(batch[0]!.msg)).not.toContain("image_ids");
   });
 });
+
+describe("picture archive: model copy", () => {
+  it("stores the original but hands the model the scaled copy", async () => {
+    const { createModelImage } = await import("../src/image-resize.js");
+    const { pngBytes } = await import("./helpers.js");
+    const original = pngBytes(1600, 1200);
+    const source: ImageSource = { maxPerRun: 4, load: async () => ({ type: "image", data: original.toString("base64"), mimeType: "image/png" }) };
+    const store = new ImageStore(openDb(":memory:"));
+    const archive = createPictureArchive({ source, store, maxBytes: 50_000_000, shrink: createModelImage({ maxPixels: 100_000, maxEdge: 1568, detailMaxPixels: 200_000 }) });
+    const [pic] = await archive.capture(msg("1", ["https://x/a"]));
+    expect(store.get("100", pic!.id)!.data.equals(original)).toBe(true);
+    expect(Buffer.from(pic!.image.data, "base64").length).toBeLessThan(original.length / 4);
+  });
+
+  it("a message whose pictures are already stored is not downloaded again (the URL may be gone)", async () => {
+    const { archive, store, loads } = setup();
+    const m = msg("1", ["https://x/1"]);
+    const [first] = await archive.capture(m);
+    expect(loads).toHaveLength(1);
+    const expired: ImageSource = { maxPerRun: 4, load: async () => { throw new Error("URL expired"); } };
+    const [again] = await createPictureArchive({ source: expired, store, maxBytes: 1_000_000 }).capture(m); // e.g. after a restart
+    expect(again?.id).toBe(first!.id);
+    expect(again?.image.data).toBe(first!.image.data);
+  });
+});

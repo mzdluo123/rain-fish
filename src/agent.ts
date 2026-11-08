@@ -26,7 +26,7 @@ export const ALLOWED_TOOLS = ["read", "write", "edit", "ls", "find", "grep", SEA
 /** The agent's working directory is the root of its virtual filesystem. */
 const VFS_ROOT = "/";
 
-export async function createAgent({ systemPrompt, fs, store, groupId, send, sendImage, images, budget, model, modelRuntime, thinkingLevel }: AgentDeps): Promise<{ session: AgentSession }> {
+export async function createAgent({ systemPrompt, fs, store, groupId, send, sendImage, images, budget, modelImage, model, modelRuntime, thinkingLevel }: AgentDeps): Promise<{ session: AgentSession }> {
   const ops = createVfsOperations(fs);
 
   // Disable everything that could smuggle in extra tools or instructions
@@ -68,7 +68,7 @@ export async function createAgent({ systemPrompt, fs, store, groupId, send, send
       createVfsFindTool(fs),
       createVfsGrepTool(fs),
       createSearchMessagesTool(store, groupId, images),
-      createViewImageTool(images, groupId, () => canReadImages(current?.model)),
+      createViewImageTool(images, groupId, () => canReadImages(current?.model), modelImage),
       createSendTool(send, budget),
       createSendImageTool(sendImage, budget),
       createStopTool(),

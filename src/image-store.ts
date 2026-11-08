@@ -57,7 +57,7 @@ export class ImageStore {
     return rows.map((r) => r.image_id);
   }
 
-  /** The stored picture of message slot `idx`, without marking it used (used when the batch is shown to the model). */
+  /** The stored picture of message slot `idx` (marks it as recently used: it is about to be shown to the model). */
   slot(groupId: string, messageId: string, idx: number, platform = "qq"): StoredImage | undefined {
     const row = this.db
       .query(
@@ -65,6 +65,7 @@ export class ImageStore {
          WHERE m.platform = ? AND m.group_id = ? AND m.message_id = ? AND m.idx = ?`,
       )
       .get(platform, groupId, messageId, idx) as { id: number; mime: string; data: Uint8Array; size: number } | null;
+    if (row) this.db.query("UPDATE images SET last_used = ? WHERE id = ?").run(Math.floor(Date.now() / 1000), row.id);
     return row ? { id: row.id, mime: row.mime, size: row.size, data: Buffer.from(row.data) } : undefined;
   }
 

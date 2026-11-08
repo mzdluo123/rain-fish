@@ -2,9 +2,11 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { buildArchiveMessage, canReadImages, extendArchiveSource, serializeForArchive, type ArchiveBudget } from "./context/archive.js";
-import { estimateContextTokens, estimateMessageTokens, estimateTextTokens, IMAGE_TOKENS } from "./context/estimate.js";
+import { estimateContextTokens, estimateMessageTokens, estimateTextTokens } from "./context/estimate.js";
+import { imageBlockTokens } from "./context/image-size.js";
 import { MEMORY_FLUSH_PROMPT } from "./context/memory.js";
 import { SEND_NUDGE_PROMPT, SPEAK_NUDGE_PROMPT } from "./context/nudge.js";
+import { personaPinMessage } from "./context/persona.js";
 import { pruneExpensive, type PruneState } from "./context/prune.js";
 import type { ConversationStore } from "./conversation-store.js";
 import { noopLogger } from "./logger.js";
@@ -13,6 +15,9 @@ import type { RunBudget } from "./run-budget.js";
 import { noopEventLog, preview } from "./trace/event-log.js";
 import { traceSession } from "./trace/session-events.js";
 import type { ContextConfig, Conversation, EventLog, Logger } from "./types.js";
+
+/** Tokens the pictures of a prompt will cost (measured from their headers). */
+const imageTokens = (images?: readonly ImageContent[]): number => (images ?? []).reduce((n, i) => n + imageBlockTokens(i), 0);
 
 export interface PiConversationDeps {
   groupId: string;
@@ -23,6 +28,8 @@ export interface PiConversationDeps {
   events?: EventLog;
   /** Caps the messages posted per run; reset at the start of every run and reminder turn. */
   budget?: RunBudget;
+  /** The agent's self-profile (its `/persona.md`), pinned at the top of every request; undefined = none yet. Read once per run. */
+  persona?: () => string | undefined;
 }
 
 /**
@@ -45,6 +52,8 @@ export class PiConversation implements Conversation {
   private turnCount = 0;
   /** How far level-1 clearing has gone in the live transcript (see `PruneState`). */
   private readonly pruneState: PruneState = { through: 0 };
+  /** The persona as of the start of the current run (an edit during the run shows up in the next one: the request prefix stays stable). */
+  private pinned?: AgentMessage;
 
   private constructor(private readonly d: PiConversationDeps) {
     this.log = (d.logger ?? noopLogger).withTag("context");
@@ -53,6 +62,7 @@ export class PiConversation implements Conversation {
 
   static async create(deps: PiConversationDeps): Promise<PiConversation> {
     const c = new PiConversation(deps);
+    c.refreshPersona();
     await c.restore();
     c.installPruning();
     traceSession(deps.session, c.events, () => c.cur);
@@ -73,10 +83,11 @@ export class PiConversation implements Conversation {
   async ask(prompt: string, ctx: { run?: string; addressed?: boolean; mustSpeak?: boolean; images?: ImageContent[] } = {}): Promise<string> {
     this.cur = { run: ctx.run };
     this.d.budget?.reset();
+    this.refreshPersona();
     const images = this.acceptsImages ? ctx.images : undefined; // a text-only model would reject the request
     try {
-      await this.flushMemoryIfNeeded(prompt, images?.length);
-      await this.compactIfNeeded(prompt, images?.length);
+      await this.flushMemoryIfNeeded(prompt, imageTokens(images));
+      await this.compactIfNeeded(prompt, imageTokens(images));
       const first = await this.runTurn(prompt, "message", images);
       if ((!ctx.addressed && !ctx.mustSpeak) || first.sent) return first.text;
       // Someone addressed the agent (or it was told it must speak), it wrote text instead of calling `send`: nobody saw it. One
@@ -96,6 +107,17 @@ export class PiConversation implements Conversation {
     }
   }
 
+  /** Re-reads the persona file. A failure keeps the previous text (the agent must not lose its profile over a hiccup). */
+  private refreshPersona(): void {
+    if (!this.d.persona) return;
+    try {
+      const text = this.d.persona()?.trim();
+      this.pinned = text ? personaPinMessage(text) : undefined;
+    } catch (err) {
+      this.log.warn(`group ${this.d.groupId}: could not read the persona file: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   /** Trace event tagged with the group and, while a run is in progress, its `run` and current `turn`. */
   private emit(event: string, data: Record<string, unknown> = {}): void {
     this.events.emit(event, { ...this.cur, ...data });
@@ -107,7 +129,7 @@ export class PiConversation implements Conversation {
     const from = state.messages.length;
     this.cur = { ...this.cur, turn: `t${++this.turnCount}`, kind };
     const t0 = Date.now();
-    this.emit("turn.start", { prompt_chars: prompt.length, images: images?.length ?? 0, context_messages: from, context_tokens: this.contextTokens(prompt, images?.length), prompt: preview(this.events, prompt) });
+    this.emit("turn.start", { prompt_chars: prompt.length, images: images?.length ?? 0, context_messages: from, context_tokens: this.contextTokens(prompt, imageTokens(images)), prompt: preview(this.events, prompt) });
     let added: AgentMessage[];
     try {
       await this.d.session.prompt(prompt, images?.length ? { images } : undefined);
@@ -181,8 +203,10 @@ export class PiConversation implements Conversation {
   private installPruning(): void {
     const agent = this.d.session.agent;
     const previous = agent.transformContext;
-    agent.transformContext = async (messages, signal) =>
-      pruneExpensive(previous ? await previous(messages, signal) : messages, this.pruneOptions, this.pruneState);
+    agent.transformContext = async (messages, signal) => {
+      const view = pruneExpensive(previous ? await previous(messages, signal) : messages, this.pruneOptions, this.pruneState);
+      return this.pinned ? [this.pinned, ...view] : view; // before everything, the archive included: the prefix only changes when the file does
+    };
   }
 
   /**
@@ -190,10 +214,10 @@ export class PiConversation implements Conversation {
    * into its files (without `send`: this turn must not speak in the group). Runs once per cycle.
    * A failed flush is logged and not fatal: the context must still be bounded.
    */
-  private async flushMemoryIfNeeded(prompt: string, images = 0): Promise<void> {
+  private async flushMemoryIfNeeded(prompt: string, imageTokens = 0): Promise<void> {
     const { session, context: c, groupId } = this.d;
     if (this.flushed) return;
-    const tokens = this.contextTokens(prompt, images);
+    const tokens = this.contextTokens(prompt, imageTokens);
     const threshold = c.compactTokens * c.flushRatio;
     if (tokens <= threshold) return;
 
@@ -220,10 +244,12 @@ export class PiConversation implements Conversation {
     }
   }
 
-  private contextTokens(prompt: string, images = 0): number {
+  /** `imageTokens`: what the pictures attached to the prompt will cost. */
+  private contextTokens(prompt: string, imageTokens = 0): number {
     const { session } = this.d;
     const view = pruneExpensive(session.agent.state.messages, this.pruneOptions, this.pruneState, false);
-    return estimateContextTokens(session.systemPrompt, view) + estimateTextTokens(prompt) + images * IMAGE_TOKENS;
+    const pin = this.pinned ? estimateMessageTokens(this.pinned) : 0;
+    return estimateContextTokens(session.systemPrompt, view) + pin + estimateTextTokens(prompt) + imageTokens;
   }
 
   /** Size of the context the next request would carry (the estimate the compaction thresholds use). */
@@ -237,10 +263,10 @@ export class PiConversation implements Conversation {
   }
 
   /** Level 2: snap-compact older history once the (pruned) context passes the threshold. */
-  private async compactIfNeeded(prompt: string, images = 0): Promise<void> {
+  private async compactIfNeeded(prompt: string, imageTokens = 0): Promise<void> {
     const { session, context: c, groupId } = this.d;
     const state = session.agent.state;
-    const tokens = this.contextTokens(prompt, images);
+    const tokens = this.contextTokens(prompt, imageTokens);
     if (tokens <= c.compactTokens) return;
 
     const offset = this.archived ? 1 : 0;

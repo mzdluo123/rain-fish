@@ -10,6 +10,8 @@ import { noopEventLog } from "./trace/event-log.js";
 import type { Config, EventLog, GroupImageSender, GroupSender, Logger } from "./types.js";
 import { ImageStore } from "./image-store.js";
 import { RunBudget } from "./run-budget.js";
+import { PERSONA_PATH } from "./context/persona.js";
+import { createModelImage } from "./image-resize.js";
 import { VirtualFs } from "./vfs.js";
 
 /**
@@ -56,6 +58,7 @@ export async function createPiConversationFactory(db: Database, config: Config, 
   const fs = new VirtualFs(db);
   const store = new MessageStore(db);
   const images = new ImageStore(db);
+  const modelImage = createModelImage({ maxPixels: config.images.modelMaxPixels, maxEdge: config.images.modelMaxEdge, detailMaxPixels: config.images.detailMaxPixels });
   const conversations = new ConversationStore(db);
   const toolLog = logger.withTag("tool");
   const llmLog = logger.withTag("llm");
@@ -72,11 +75,12 @@ export async function createPiConversationFactory(db: Database, config: Config, 
       sendImage: (imageId, text, replyTo) => sendImage(groupId, imageId, text, replyTo),
       images,
       budget,
+      modelImage,
       model,
       modelRuntime: runtime,
       thinkingLevel: config.thinkingLevel,
     });
-    const conversation = await PiConversation.create({ groupId, session, store: conversations, context: config.context, logger, events, budget });
+    const conversation = await PiConversation.create({ groupId, session, store: conversations, context: config.context, logger, events, budget, persona: () => (fs.exists(PERSONA_PATH) ? fs.readText(PERSONA_PATH) : undefined) });
     let llmStarted = Date.now();
     session.subscribe((event) => {
       if (event.type === "tool_execution_start") toolLog.debug(`${event.toolName} ${JSON.stringify(event.args)}`);

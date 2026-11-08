@@ -1,12 +1,14 @@
 import { noopLogger } from "./logger.js";
 import type { ImageStore } from "./image-store.js";
-import type { GroupMessage, ImageSource, Logger, PictureArchive, StoredPicture } from "./types.js";
+import type { GroupMessage, ImageSource, Logger, ModelImageFn, PictureArchive, StoredPicture } from "./types.js";
 
 export interface PictureArchiveOptions {
   source: ImageSource;
   store: ImageStore;
   /** Total bytes kept; the least recently used pictures are deleted beyond it. A picture bigger than this is not kept. */
   maxBytes: number;
+  /** Makes the copy the model sees (scaled down). The stored original is never changed. Omit to hand the model the original. */
+  shrink?: ModelImageFn;
   logger?: Logger;
 }
 
@@ -24,12 +26,23 @@ export function createPictureArchive(opts: PictureArchiveOptions): PictureArchiv
     const out = await Promise.all(
       refs.map(async (ref, idx): Promise<StoredPicture | undefined> => {
         try {
-          const image = await opts.source.load(ref.url);
-          if (!image) return undefined;
-          const bytes = Buffer.from(image.data, "base64");
-          if (bytes.length > opts.maxBytes) return undefined;
-          const id = opts.store.put(msg.groupId, msg.messageId, idx, bytes, image.mimeType);
-          return { id, image };
+          // Already stored (an earlier wake-up, or a restart): use that copy, the URL may be gone.
+          const had = opts.store.slot(msg.groupId, msg.messageId, idx);
+          let id: number;
+          let bytes: Buffer;
+          let mime: string;
+          if (had) {
+            ({ id, data: bytes, mime } = had);
+          } else {
+            const image = await opts.source.load(ref.url);
+            if (!image) return undefined;
+            bytes = Buffer.from(image.data, "base64");
+            mime = image.mimeType;
+            if (bytes.length > opts.maxBytes) return undefined;
+            id = opts.store.put(msg.groupId, msg.messageId, idx, bytes, mime);
+          }
+          const shown = opts.shrink ? await opts.shrink({ data: bytes, mime }) : { data: bytes, mime };
+          return { id, image: { type: "image", data: shown.data.toString("base64"), mimeType: shown.mime } };
         } catch (err) {
           log.warn(`could not store a picture of message ${msg.messageId}: ${err instanceof Error ? err.message : String(err)}`);
           return undefined;

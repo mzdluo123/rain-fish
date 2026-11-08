@@ -8,6 +8,7 @@ import { OneBotClient } from "./qq/client.js";
 import { createImageSource } from "./images.js";
 import { ImageStore } from "./image-store.js";
 import { createPictureArchive } from "./picture-archive.js";
+import { createModelImage } from "./image-resize.js";
 import { PiResponder } from "./responder.js";
 import { SpeakStore } from "./speak-store.js";
 import { MessageStore } from "./store.js";
@@ -20,10 +21,21 @@ const store = new MessageStore(db);
 // The agent's `send` tool posts via the bot; the responder wakes the agent for batches of queued messages.
 let bot: Bot;
 const imageStore = new ImageStore(db);
+const modelImage = createModelImage({ maxPixels: config.images.modelMaxPixels, maxEdge: config.images.modelMaxEdge, detailMaxPixels: config.images.detailMaxPixels });
 const imageSource = config.images.maxBytes > 0 && config.images.maxPerRun > 0 ? createImageSource({ ...config.images, logger }) : undefined;
-// Pictures are kept as they arrive (so they outlive QQ's URLs); with IMAGE_STORE_MAX_BYTES=0 only the wake-up download remains.
-const pictures = config.images.maxBytes > 0 && config.images.storeMaxBytes > 0 ? createPictureArchive({ source: imageSource ?? createImageSource({ ...config.images, maxPerRun: 1, logger }), store: imageStore, maxBytes: config.images.storeMaxBytes, logger }) : undefined;
-if (config.images.storeMaxBytes >= 0) {
+// Pictures are kept as they arrive (so they outlive QQ's URLs; the ORIGINAL is stored, the model gets a scaled-down copy). With
+// IMAGE_STORE_MAX_BYTES=0 only the download at wake-up remains, scaled the same way.
+const pictures = config.images.maxBytes > 0 && config.images.storeMaxBytes > 0 ? createPictureArchive({ source: imageSource ?? createImageSource({ ...config.images, maxPerRun: 1, logger }), store: imageStore, maxBytes: config.images.storeMaxBytes, shrink: modelImage, logger }) : undefined;
+const promptImages = imageSource && {
+  maxPerRun: imageSource.maxPerRun,
+  async load(url: string) {
+    const img = await imageSource.load(url);
+    if (!img) return undefined;
+    const shown = await modelImage({ data: Buffer.from(img.data, "base64"), mime: img.mimeType });
+    return { type: "image" as const, data: shown.data.toString("base64"), mimeType: shown.mime };
+  },
+};
+{
   const evicted = imageStore.evict(config.images.storeMaxBytes); // the cap may have been lowered (or set to 0) since the last run
   if (evicted > 0) logger.info(`deleted ${evicted} stored picture(s) to fit IMAGE_STORE_MAX_BYTES=${config.images.storeMaxBytes}`);
 }
@@ -32,7 +44,7 @@ const makeConversation = await orExit(logger, () =>
 );
 const responder = new PiResponder(
   makeConversation,
-  { wake: config.wake, speakEveryRuns: config.speakEveryRuns, speakStore: new SpeakStore(db), pending: new PendingStore(db), images: imageSource, pictures, logger, events },
+  { wake: config.wake, speakEveryRuns: config.speakEveryRuns, speakStore: new SpeakStore(db), pending: new PendingStore(db), images: promptImages, pictures, logger, events },
 );
 let backfilled = false;
 const client = new OneBotClient({

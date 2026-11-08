@@ -1,7 +1,9 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
-/** Rough cost of one image block (archive frames are ~2.9-3.0k on the major providers). */
-export const IMAGE_TOKENS = 3000;
+import { IMAGE_TOKENS } from "./estimate-constants.js";
+import { imageBlockTokens } from "./image-size.js";
+
+export { IMAGE_TOKENS };
 /** Tool schemas ride along with every request but are not in the system prompt text. */
 const TOOLS_OVERHEAD_TOKENS = 2500;
 
@@ -34,8 +36,8 @@ export function estimateMessageTokens(m: AgentMessage): number {
   }
 }
 
-function blocksTokens(blocks: readonly { type: string; text?: string }[]): number {
-  return blocks.reduce((sum, b) => sum + (b.type === "image" ? IMAGE_TOKENS : estimateTextTokens(b.text ?? "")), 0);
+function blocksTokens(blocks: readonly { type: string; text?: string; data?: string }[]): number {
+  return blocks.reduce((sum, b) => sum + (b.type === "image" ? imageBlockTokens(b) : estimateTextTokens(b.text ?? "")), 0);
 }
 
 export function estimateMessagesTokens(messages: readonly AgentMessage[]): number {

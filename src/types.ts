@@ -146,6 +146,8 @@ export interface AgentDeps {
   images: ImageStore;
   /** Caps and paces what the agent posts in one run; reset by the conversation at the start of each run. */
   budget: RunBudget;
+  /** Scales pictures down before the model sees them (`view_image`); omit to show them as stored. */
+  modelImage?: ModelImageFn;
 }
 
 // ---- QQ wire types (validated at the WebSocket edge, derived from schemas) --------
@@ -212,6 +214,9 @@ export interface StoredImage {
   size: number;
   data: Buffer;
 }
+
+/** The copy of a picture that is shown to the model (scaled down). `closer`: a larger budget, for when the agent wants detail. Never throws. */
+export type ModelImageFn = (img: { data: Buffer; mime: string }, closer?: boolean) => Promise<{ data: Buffer; mime: string }>;
 
 /** A picture of a message, stored: its id and the content to show the model. */
 export interface StoredPicture {

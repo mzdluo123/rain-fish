@@ -72,6 +72,12 @@ export const configSchema = z
     IMAGE_MAX_PER_RUN: z.coerce.number().int().nonnegative().default(4),
     /** Pictures of incoming messages are downloaded and kept (so the agent can look at and re-send them later) up to this many bytes in total; the least recently used go first. 0 = pictures are not kept. */
     IMAGE_STORE_MAX_BYTES: z.coerce.number().int().nonnegative().default(200 * 1024 * 1024),
+    /** The model sees a scaled-down copy of every picture (same aspect ratio, never enlarged): at most this many pixels (tokens ~ pixels / 750). 0 = send pictures as they are. */
+    IMAGE_MODEL_MAX_PIXELS: z.coerce.number().int().nonnegative().default(800_000),
+    /** ... and at most this long a side (the big providers resize anything above ~1568 px themselves). */
+    IMAGE_MODEL_MAX_EDGE: z.coerce.number().int().positive().default(1568),
+    /** Pixel budget of `view_image` when the agent asks for detail (about the providers' own limit). */
+    IMAGE_DETAIL_MAX_PIXELS: z.coerce.number().int().positive().default(1_150_000),
     // --- what the agent posts in one run ---
     /** Messages (`send` + `send_image`) the agent may post in one run; more are refused until the next wake-up. */
     SEND_MAX_PER_RUN: z.coerce.number().int().positive().default(6),
@@ -117,6 +123,9 @@ export const configSchema = z
       maxBytes: e.IMAGE_MAX_BYTES,
       maxPerRun: e.IMAGE_MAX_PER_RUN,
       storeMaxBytes: e.IMAGE_STORE_MAX_BYTES,
+      modelMaxPixels: e.IMAGE_MODEL_MAX_PIXELS,
+      modelMaxEdge: e.IMAGE_MODEL_MAX_EDGE,
+      detailMaxPixels: e.IMAGE_DETAIL_MAX_PIXELS,
     },
     send: {
       maxPerRun: e.SEND_MAX_PER_RUN,

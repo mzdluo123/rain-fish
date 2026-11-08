@@ -69,3 +69,30 @@ describe("view_image tool", () => {
     await expect(view.execute("t", { image_id: "i9999" } as never)).rejects.toThrow(/No picture/);
   });
 });
+
+describe("view_image tool: scaling", () => {
+  it("shows a scaled-down copy by default and a larger one with detail", async () => {
+    const { createModelImage } = await import("../src/image-resize.js");
+    const { imageDimensions } = await import("../src/context/image-size.js");
+    const { pngBytes } = await import("./helpers.js");
+    const env = makeEnv();
+    const id = env.images.put("100", "1", 0, pngBytes(1600, 1200), "image/png");
+    const faux = fauxProvider();
+    const runtime = await testModelRuntime();
+    runtime.registerNativeProvider(faux.provider);
+    const modelImage = createModelImage({ maxPixels: 200_000, maxEdge: 1568, detailMaxPixels: 600_000 });
+    const { session } = await createAgent({ ...env, modelImage, model: faux.getModel(), modelRuntime: runtime });
+    const view = session.agent.state.tools.find((t) => t.name === "view_image")!;
+    const px = async (args: object) => {
+      const res = await view.execute("t", { image_id: `i${id}`, ...args } as never);
+      const img = res.content.find((c) => c.type === "image") as { data: string };
+      const d = imageDimensions(Buffer.from(img.data, "base64"))!;
+      return d.width * d.height;
+    };
+    const normal = await px({});
+    const closer = await px({ detail: true });
+    expect(normal).toBeLessThanOrEqual(200_000);
+    expect(closer).toBeGreaterThan(normal * 2);
+    expect(closer).toBeLessThanOrEqual(600_000);
+  });
+});
