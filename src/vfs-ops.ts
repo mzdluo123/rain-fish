@@ -1,5 +1,6 @@
 import type { VfsOperations } from "./types.js";
 import { VirtualFs } from "./vfs.js";
+import { validateWakeRulesWrite, WAKE_RULES_PATH } from "./wake-rules.js";
 
 /** Largest Markdown file the agent may create or modify (10 KiB). Bigger notes must be split into linked files. */
 export const AGENT_MAX_FILE_BYTES = 10 * 1024;
@@ -13,6 +14,7 @@ export function assertAgentWritable(p: string, content: string | Uint8Array): vo
   if (!/\.md$/i.test(n)) {
     throw new Error(`EINVAL: only Markdown files can be created or modified, and '${n}' is not a .md file. Use a file name ending in .md.`);
   }
+  if (n === WAKE_RULES_PATH) validateWakeRulesWrite(content); // a table that does not parse is never written
   const bytes = typeof content === "string" ? Buffer.byteLength(content, "utf-8") : content.byteLength;
   if (bytes > AGENT_MAX_FILE_BYTES) {
     throw new Error(

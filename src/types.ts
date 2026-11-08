@@ -301,6 +301,25 @@ export interface GroupResponder {
 
 export type WakeConfig = Config["wake"];
 
+export type WeightRuleSpecial = "addressed" | "placeholder";
+
+/** One row of the wake-up heat table (`/wake-rules.md`, see `src/wake-rules.ts`). A row applies when any of its conditions holds (and the text is short enough). */
+export interface WeightRule {
+  name: string;
+  /** Multiplies the message's excitation: below 1 = wake sooner, above 1 = wait longer. */
+  weight: number;
+  contains: string[];
+  starts: string[];
+  ends: string[];
+  /** The row applies only to messages of at most this many characters. */
+  maxLen?: number;
+  /** `addressed`: the message is addressed to the bot; `placeholder`: the text is only "[图片]"-like placeholders. */
+  special?: WeightRuleSpecial;
+}
+
+/** How much one message excites the group's chat, and which rule rows said so. */
+export type WeighFn = (text: string, addressed: boolean) => { weight: number; rules: string[] };
+
 export interface BotOptions {
   store: MessageStore;
   /** Stored pictures: needed to send them (`sendImage`). */

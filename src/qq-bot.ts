@@ -12,6 +12,8 @@ import { createModelImage } from "./image-resize.js";
 import { PiResponder } from "./responder.js";
 import { SpeakStore } from "./speak-store.js";
 import { MessageStore } from "./store.js";
+import { VirtualFs } from "./vfs.js";
+import { createWakeRules } from "./wake-rules.js";
 
 const { config, logger, events } = bootstrap();
 
@@ -42,9 +44,10 @@ const promptImages = imageSource && {
 const makeConversation = await orExit(logger, () =>
   createPiConversationFactory(db, config, logger, (groupId, text, replyTo) => bot.sendText(groupId, text, replyTo), (groupId, imageId, text, replyTo) => bot.sendImage(groupId, imageId, text, replyTo), events),
 );
+const wakeRules = createWakeRules({ fs: new VirtualFs(db), logger }); // /wake-rules.md in the agent's filesystem: created if missing, reloaded when the agent edits it
 const responder = new PiResponder(
   makeConversation,
-  { wake: config.wake, speakEveryRuns: config.speakEveryRuns, speakStore: new SpeakStore(db), pending: new PendingStore(db), images: promptImages, pictures, logger, events },
+  { wake: config.wake, weigh: wakeRules.weigh, speakEveryRuns: config.speakEveryRuns, speakStore: new SpeakStore(db), pending: new PendingStore(db), images: promptImages, pictures, logger, events },
 );
 let backfilled = false;
 const client = new OneBotClient({

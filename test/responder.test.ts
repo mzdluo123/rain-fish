@@ -308,6 +308,14 @@ describe("PiResponder wake-ups", () => {
     expect(await dueAfter("首先，", false)).toBeGreaterThan(plain);
   });
 
+  it("takes the weight of each message from the injected table and traces the rows that applied", () => {
+    const trace = memoryEventLog();
+    const r = new PiResponder(async () => fakeConversation([]).conversation, { wake: wakeCfg(0, 0), random: () => 0.5, events: trace.events, weigh: (text) => ({ weight: text === "heavy" ? 4 : 1, rules: text === "heavy" ? ["mine"] : [] }) });
+    r.notify(msg("1", "heavy", "1"), false);
+    expect(trace.records("wake.weight")[0]).toMatchObject({ message_id: "1", weight: 4, rules: ["mine"] });
+    expect(trace.records("wake.scheduled")[0]!.excitation).toBe(4);
+  });
+
   it("the maximum wait ends a chat that never goes quiet; a full batch wakes the agent at once", async () => {
     const hawkes = { decayPerSec: 0.4, quietThreshold: 0.3, maxWaitMs: 10_000 };
     const log: string[] = [];

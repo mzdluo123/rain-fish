@@ -1,7 +1,8 @@
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { noopLogger } from "./logger.js";
-import { weighMessage, WakeIntensity } from "./wake-intensity.js";
-import type { Conversation, ConversationFactory, GroupMessage, GroupResponder, EventLog, ImageSource, Logger, PendingMessage, PictureArchive, StoredPicture, WakeConfig } from "./types.js";
+import { WakeIntensity } from "./wake-intensity.js";
+import { defaultWeigh } from "./wake-rules.js";
+import type { Conversation, ConversationFactory, GroupMessage, GroupResponder, EventLog, ImageSource, Logger, PendingMessage, PictureArchive, StoredPicture, WakeConfig, WeighFn } from "./types.js";
 import { imageRef } from "./image-store.js";
 import type { PendingStore } from "./pending-store.js";
 import { noopEventLog } from "./trace/event-log.js";
@@ -114,6 +115,8 @@ export interface PiResponderOptions {
   speakEveryRuns?: number;
   /** Where the per-group run counter is kept so the rhythm survives a restart; omit to keep it in memory only. */
   speakStore?: SpeakStore;
+  /** Weight of a message for the heat of the chat (the agent's `/wake-rules.md`); omit for the default table. */
+  weigh?: WeighFn;
   /** Uniform [0, 1) source; replaceable in tests. */
   random?: () => number;
   logger?: Logger;
@@ -182,7 +185,7 @@ export class PiResponder implements GroupResponder {
     if (p.addressed) group.addressedSince ??= now;
     // A restored message was heard before the restart: it starts a clock but adds no excitation.
     if (origin === "live") {
-      const { weight, rules } = weighMessage(p.msg.text, p.addressed);
+      const { weight, rules } = (this.opts.weigh ?? defaultWeigh)(p.msg.text, p.addressed);
       group.intensity.add(now, weight);
       group.events.emit("wake.weight", { message_id: p.msg.messageId, weight, rules });
     }
