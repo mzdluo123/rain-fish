@@ -1,8 +1,6 @@
 import {
   createAgentSession,
   createEditToolDefinition,
-  createFindToolDefinition,
-  createGrepToolDefinition,
   createLsToolDefinition,
   createReadToolDefinition,
   createWriteToolDefinition,
@@ -12,61 +10,63 @@ import {
   type AgentSession,
   type ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
-import { access } from "node:fs/promises";
-import { createSandboxOperations, Sandbox } from "./sandbox.js";
+import { createSearchMessagesTool, SEARCH_TOOL } from "./tools/search-messages.js";
+import { createVfsFindTool, createVfsGrepTool } from "./tools/vfs-search.js";
+import type { AgentDeps } from "./types.js";
+import { createVfsOperations } from "./vfs-ops.js";
 
 /** The only tools the agent may ever use. `bash` is deliberately absent. */
-export const ALLOWED_TOOLS = ["read", "write", "edit", "ls", "find", "grep"] as const;
+export const ALLOWED_TOOLS = ["read", "write", "edit", "ls", "find", "grep", SEARCH_TOOL] as const;
 
-/** System-prompt file, read from the sandbox root. All prompt text lives there, none in code. */
-export const AGENT_FILE = "agent.md";
+/** System-prompt file inside the virtual filesystem. All prompt text lives there, none in code. */
+export const AGENT_FILE = "/agent.md";
 
-export async function createSandboxedAgent(sandboxDir: string): Promise<{ session: AgentSession; sandbox: Sandbox }> {
-  const sandbox = new Sandbox(sandboxDir);
-  // Pi treats a non-existent path as literal prompt text, so verify the file first.
-  const agentFile = await sandbox.resolve(AGENT_FILE);
-  await access(agentFile).catch(() => {
-    throw new Error(`Missing ${AGENT_FILE} in sandbox root: ${sandbox.root}`);
-  });
-  const ops = createSandboxOperations(sandbox);
-  const cwd = sandbox.root;
+/** The agent's working directory is the root of its virtual filesystem. */
+const VFS_ROOT = "/";
+
+export async function createAgent({ fs, store }: AgentDeps): Promise<{ session: AgentSession }> {
+  if (!fs.exists(AGENT_FILE)) {
+    throw new Error(`Missing ${AGENT_FILE} in the database. Seed it with: bun run fs import workspace`);
+  }
+  const ops = createVfsOperations(fs);
 
   // Disable everything that could smuggle in extra tools or instructions
-  // (extensions can register bash-like tools; skills/context files come from outside the sandbox).
+  // (extensions can register bash-like tools; skills/context files come from the host disk).
   const resourceLoader = new DefaultResourceLoader({
-    cwd,
+    cwd: VFS_ROOT,
     agentDir: getAgentDir(),
     noExtensions: true,
     noSkills: true,
     noPromptTemplates: true,
     noThemes: true,
     noContextFiles: true,
-    systemPrompt: agentFile, // Pi reads the file and uses its content as the system prompt
+    systemPrompt: fs.readText(AGENT_FILE),
   });
   await resourceLoader.reload();
 
+  const allowed: string[] = [...ALLOWED_TOOLS];
   const { session } = await createAgentSession({
-    cwd,
+    cwd: VFS_ROOT,
     resourceLoader,
-    sessionManager: SessionManager.inMemory(cwd),
+    sessionManager: SessionManager.inMemory(VFS_ROOT),
     // Allowlist: built-in `bash` is never enabled.
-    tools: [...ALLOWED_TOOLS],
-    // Same-named custom definitions replace the built-ins with path-confined versions.
+    tools: allowed,
+    // Same-named custom definitions replace the host-disk built-ins with database-backed ones.
     customTools: [
-      createReadToolDefinition(cwd, { operations: ops.read }),
-      createWriteToolDefinition(cwd, { operations: ops.write }),
-      createEditToolDefinition(cwd, { operations: ops.edit }),
-      createLsToolDefinition(cwd, { operations: ops.ls }),
-      createFindToolDefinition(cwd, { operations: ops.find }),
-      createGrepToolDefinition(cwd, { operations: ops.grep }),
+      createReadToolDefinition(VFS_ROOT, { operations: ops.read }),
+      createWriteToolDefinition(VFS_ROOT, { operations: ops.write }),
+      createEditToolDefinition(VFS_ROOT, { operations: ops.edit }),
+      createLsToolDefinition(VFS_ROOT, { operations: ops.ls }),
+      createVfsFindTool(fs),
+      createVfsGrepTool(fs),
+      createSearchMessagesTool(store),
       // Pi's per-tool generics are invariant in renderCall; the array type is the SDK's erased form.
     ] as unknown as ToolDefinition[],
   });
 
-  const active = session.getActiveToolNames();
-  const illegal = active.filter((n) => !(ALLOWED_TOOLS as readonly string[]).includes(n));
+  const illegal = session.getActiveToolNames().filter((n) => !allowed.includes(n));
   if (illegal.length > 0) {
     throw new Error(`Refusing to start: unexpected tools enabled: ${illegal.join(", ")}`);
   }
-  return { session, sandbox };
+  return { session };
 }

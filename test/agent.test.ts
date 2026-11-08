@@ -1,32 +1,30 @@
-import { symlinkSync, writeFileSync } from "node:fs";
-import path from "node:path";
-import { describe, expect, it } from "vitest";
-import { AGENT_FILE, createSandboxedAgent } from "../src/agent.js";
-import { makeBox } from "./helpers.js";
+import { describe, expect, it } from "bun:test";
+import { createAgent } from "../src/agent.js";
+import { makeEnv } from "./helpers.js";
 
-describe("agent.md system context", () => {
-  it("is used as the system prompt", async () => {
-    const { box } = makeBox("# Persona\nYou are TESTBOT.");
-    const { session } = await createSandboxedAgent(box);
+describe("agent", () => {
+  it("uses /agent.md from the database as the system prompt", async () => {
+    const { session } = await createAgent(makeEnv("# Persona\nYou are TESTBOT."));
     expect(session.systemPrompt).toContain("You are TESTBOT.");
   });
 
-  it("is read fresh on each session creation", async () => {
-    const { box } = makeBox("v1 PERSONA");
-    writeFileSync(path.join(box, AGENT_FILE), "v2 PERSONA");
-    const { session } = await createSandboxedAgent(box);
+  it("reads /agent.md fresh on each session creation", async () => {
+    const env = makeEnv("v1 PERSONA");
+    env.fs.writeFile("/agent.md", "v2 PERSONA");
+    const { session } = await createAgent(env);
     expect(session.systemPrompt).toContain("v2 PERSONA");
     expect(session.systemPrompt).not.toContain("v1 PERSONA");
   });
 
-  it("is not accepted through a symlink leaving the sandbox", async () => {
-    const { box, outside } = makeBox(null);
-    symlinkSync(outside, path.join(box, AGENT_FILE));
-    await expect(createSandboxedAgent(box)).rejects.toThrow(/outside the sandbox/);
+  it("fails with the seeding hint when /agent.md is missing, and does not treat a directory as the prompt", async () => {
+    await expect(createAgent(makeEnv(null))).rejects.toThrow(/Missing \/agent\.md.*fs import/);
+    const env = makeEnv(null);
+    env.fs.mkdir("/agent.md");
+    await expect(createAgent(env)).rejects.toThrow(); // EISDIR on read, never a bogus prompt
   });
 
-  it("fails clearly when agent.md is missing", async () => {
-    const { box } = makeBox(null);
-    await expect(createSandboxedAgent(box)).rejects.toThrow(/Missing agent\.md/);
+  it("exposes exactly the file tools plus search_messages, and no bash", async () => {
+    const { session } = await createAgent(makeEnv());
+    expect(session.getActiveToolNames().sort()).toEqual(["edit", "find", "grep", "ls", "read", "search_messages", "write"]);
   });
 });
