@@ -127,3 +127,31 @@ export const sendGroupMsgRequestSchema = z.object({
 });
 
 export const sendGroupMsgDataSchema = z.object({ message_id: idSchema });
+
+// History backfill. Items of `get_group_msg_history` look like message events, but NapCat may leave out
+// `post_type`/`message_type`/`self_id`/`group_id` there; the client fills them in from what it asked for.
+export const historyMessageSchema = groupMessageEventSchema.extend({
+  post_type: z.enum(["message", "message_sent"]).default("message"),
+  message_type: z.literal("group").default("group"),
+  self_id: idSchema.optional(),
+  group_id: idSchema.optional(),
+  message_seq: idSchema.optional(),
+});
+
+export const getGroupMsgHistoryRequestSchema = z.object({
+  action: z.literal("get_group_msg_history"),
+  params: z.object({
+    group_id: z.string().regex(/^\d+$/).transform(Number),
+    /** Newest seq to return (going older); omitted = the latest messages. */
+    message_seq: z.string().regex(/^\d+$/).transform(Number).optional(),
+    count: z.number().int().positive(),
+  }),
+  echo: z.string().min(1),
+});
+
+/** Items are validated one by one by the caller, so one odd message does not discard the page. */
+export const getGroupMsgHistoryDataSchema = z.object({ messages: z.array(z.unknown()) });
+
+export const getGroupListRequestSchema = z.object({ action: z.literal("get_group_list"), params: z.object({}), echo: z.string().min(1) });
+
+export const getGroupListDataSchema = z.array(z.object({ group_id: idSchema }));

@@ -1,6 +1,7 @@
 import { defineTool } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 import { MAX_SEARCH_LIMIT, type MessageStore } from "../store.js";
+import { escapeText } from "../xml.js";
 
 export const SEARCH_TOOL = "search_messages";
 const MAX_TEXT = 300;
@@ -41,7 +42,8 @@ export function createSearchMessagesTool(store: MessageStore, groupId: string) {
             .map((h) => {
               const when = new Date(h.ts * 1000).toLocaleString("sv-SE");
               const body = h.text.length > MAX_TEXT ? `${h.text.slice(0, MAX_TEXT)}…` : h.text;
-              return `[${when}] ${h.nickname} (${h.userId}): ${body}`;
+              // nicknames and text are written by group members: escape them like in the group prompt
+              return `[${when}] ${escapeText(h.nickname)} (${h.userId}): ${escapeText(body)}`;
             })
             .join("\n")
         : "No matching messages.";

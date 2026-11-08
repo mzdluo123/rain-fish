@@ -5,7 +5,7 @@ import { PiConversation } from "../src/conversation.js";
 import { ConversationStore } from "../src/conversation-store.js";
 import { openDb } from "../src/db/open.js";
 import type { ContextConfig } from "../src/types.js";
-import { assistantCall, assistantError, assistantText, recordingLogger, tokensOf, toolResultMsg } from "./helpers.js";
+import { assistantCall, assistantError, assistantText, memoryEventLog, recordingLogger, tokensOf, toolResultMsg } from "./helpers.js";
 
 type Script = (prompt: string, n: number) => AgentMessage[];
 
@@ -13,29 +13,43 @@ type Script = (prompt: string, n: number) => AgentMessage[];
 function fakeSession(opts: { vision?: boolean; script?: Script } = {}) {
   const state = { messages: [] as AgentMessage[] };
   let turn = 0;
+  let active = ["read", "edit", "send"];
+  const toolsPerPrompt: string[][] = [];
   const session = {
     state,
+    toolsPerPrompt,
     agent: { state, transformContext: undefined as ((m: AgentMessage[], s?: AbortSignal) => Promise<AgentMessage[]>) | undefined },
     model: { api: "openai-responses", id: "gpt-5.5", provider: "openai", input: opts.vision === false ? ["text"] : ["text", "image"] },
     systemPrompt: "",
     async prompt(text: string) {
+      toolsPerPrompt.push([...active]);
       state.messages = [...state.messages, { role: "user", content: text, timestamp: Date.now() }, ...(opts.script ?? (() => [assistantText("好的")]))(text, ++turn)];
     },
-    getActiveToolNames: () => [],
+    listeners: [] as ((e: unknown) => void)[],
+    subscribe(l: (e: unknown) => void) {
+      session.listeners.push(l);
+      return () => {};
+    },
+    getActiveToolNames: () => [...active],
+    setActiveToolsByName(names: string[]) {
+      active = names;
+    },
   };
   return session;
 }
 
 // system overhead is ~2.5k tokens, so thresholds are chosen on top of that
-const ctx: ContextConfig = { recentTokens: 1500, pruneMinTokens: 400, compactTokens: 6000, archiveTokens: 3000 };
+// flushRatio 10 = the memory flush never triggers here; it has its own suite below
+const ctx: ContextConfig = { recentTokens: 1500, pruneMinTokens: 400, compactTokens: 6000, archiveTokens: 3000, flushRatio: 10 };
 
 async function setup(over: { vision?: boolean; script?: Script; context?: Partial<ContextConfig>; db?: ReturnType<typeof openDb>; group?: string } = {}) {
   const db = over.db ?? openDb(":memory:");
   const store = new ConversationStore(db);
   const rec = recordingLogger();
   const session = fakeSession(over);
-  const conv = await PiConversation.create({ groupId: over.group ?? "g1", session: session as never, store, context: { ...ctx, ...over.context }, logger: rec.logger });
-  return { db, store, session, conv, entries: rec.entries };
+  const trace = memoryEventLog();
+  const conv = await PiConversation.create({ groupId: over.group ?? "g1", session: session as never, store, context: { ...ctx, ...over.context }, logger: rec.logger, events: trace.events });
+  return { db, store, session, conv, entries: rec.entries, trace };
 }
 const roles = (s: { state: { messages: AgentMessage[] } }) => s.state.messages.map((m) => (isArchiveMessage(m) ? "archive" : m.role));
 const bigScript: Script = (_p, n) => [assistantText(`第${n}轮的回答 ` + tokensOf(380))];
@@ -167,5 +181,145 @@ describe("level 2: snap compaction", () => {
     await conv.ask("另一个问题");
     expect(roles(session)).not.toContain("archive");
     expect(entries.some((e) => e.level === "warn" && e.msg.includes("not compacting"))).toBe(true);
+  });
+});
+
+describe("memory flush", () => {
+  // flush at 9000 tokens, compaction at 12000; roomy enough that a fresh compaction ends below the flush line (the snap frames themselves cost ~3k)
+  const flushCtx = { flushRatio: 0.75, compactTokens: 12_000 };
+  const isFlush = (t: string[]) => !t.includes("send");
+  const fill = async (conv: PiConversation, rounds: number) => {
+    for (let i = 1; i <= rounds; i++) await conv.ask(`第${i}个问题 ` + tokensOf(380));
+  };
+
+  it("gives the agent one turn without `send` to save memory before history is compacted, once per cycle", async () => {
+    const { conv, session, entries } = await setup({ script: bigScript, context: flushCtx });
+    await fill(conv, 14);
+    expect(session.toolsPerPrompt.filter(isFlush)).toHaveLength(1);
+    expect(session.toolsPerPrompt.at(-1)).toContain("send"); // tools are restored afterwards
+    expect(session.getActiveToolNames()).toContain("send");
+    const msgs = entries.map((e) => e.msg);
+    const flushed = msgs.findIndex((m) => m.includes("memory flush done"));
+    const compacted = msgs.findIndex((m) => m.includes("compacted"));
+    expect(flushed).toBeGreaterThanOrEqual(0);
+    expect(compacted).toBeGreaterThan(flushed); // saved first, retired after
+  });
+
+  it("does nothing while the context is comfortably below the ratio", async () => {
+    const { conv, session } = await setup({ script: bigScript, context: flushCtx });
+    await fill(conv, 3);
+    expect(session.toolsPerPrompt.filter(isFlush)).toHaveLength(0);
+  });
+
+  it("the flush turn is part of the persisted history, so the archive keeps what the agent did", async () => {
+    const { conv, store } = await setup({ script: bigScript, context: flushCtx });
+    await fill(conv, 10); // flushed, not yet compacted
+    const stored = JSON.stringify(store.load("g1").messages.map((m) => m.message));
+    expect(stored).toContain("整理记忆");
+  });
+
+  it("a restart does not forget that the flush already ran in this cycle, and the next cycle flushes again", async () => {
+    const a = await setup({ script: bigScript, context: flushCtx });
+    await fill(a.conv, 10); // flushed once, not yet compacted
+    expect(a.session.toolsPerPrompt.filter(isFlush)).toHaveLength(1);
+
+    const b = await setup({ db: a.db, script: bigScript, context: flushCtx }); // "restart"
+    await b.conv.ask("重启后的问题 " + tokensOf(380));
+    expect(b.session.toolsPerPrompt.filter(isFlush)).toHaveLength(0); // not asked a second time
+
+    await fill(b.conv, 12); // compaction happens, which starts a new cycle...
+    expect(b.entries.some((e) => e.msg.includes("compacted"))).toBe(true);
+    expect(b.session.toolsPerPrompt.filter(isFlush).length).toBeGreaterThanOrEqual(1); // ...whose flush is due again
+  });
+
+  it("a failed flush is logged and does not block the message; it is retried on the next ask and leaves no trace", async () => {
+    const script: Script = (p, n) => (p.includes("整理记忆") ? [assistantError("overloaded")] : bigScript(p, n));
+    const { conv, session, entries, store } = await setup({ script, context: flushCtx });
+    await fill(conv, 11);
+    expect(entries.some((e) => e.level === "warn" && e.msg.includes("memory flush failed") && e.msg.includes("overloaded"))).toBe(true);
+    expect(session.toolsPerPrompt.filter(isFlush).length).toBeGreaterThanOrEqual(2); // retried
+    expect(JSON.stringify(store.load("g1").messages)).not.toContain("整理记忆");
+    expect(session.getActiveToolNames()).toContain("send");
+    expect(roles(session).filter((r) => r === "user")).toHaveLength(11); // every real question answered
+  });
+});
+
+describe("event log", () => {
+  const flushCtx = { flushRatio: 0.75, compactTokens: 12_000 };
+
+  it("records a turn with the group, the run id from the caller, and a turn id", async () => {
+    const { conv, trace } = await setup();
+    await conv.ask("你好", { run: "r7" });
+    expect(trace.names()).toEqual(["conv.restore", "turn.start", "turn.end"]);
+    const [start, end] = trace.records("turn.start", "turn.end");
+    expect(start).toMatchObject({ group: "g1", run: "r7", turn: "t1", kind: "message", prompt_chars: 2 });
+    expect(end).toMatchObject({ group: "g1", run: "r7", turn: "t1", stop_reason: "stop", added_messages: 2, llm_calls: 1, tool_calls: 0, persisted_through_seq: 2 });
+    expect("prompt" in start!).toBe(false); // no message content unless asked for
+  });
+
+  it("the run id does not leak into events after the run", async () => {
+    const { conv, trace } = await setup();
+    await conv.ask("a", { run: "r1" });
+    await conv.ask("b");
+    expect(trace.records("turn.start").map((r) => r.run)).toEqual(["r1", undefined]);
+  });
+
+  it("a rolled-back turn leaves a turn.rollback with the reason instead of a turn.end", async () => {
+    const { conv, trace } = await setup({ script: () => [assistantError("rate limited")] });
+    await expect(conv.ask("hi", { run: "r1" })).rejects.toThrow("rate limited");
+    expect(trace.names("turn.start", "turn.rollback", "turn.end")).toEqual(["turn.start", "turn.rollback"]);
+    expect(trace.records("turn.rollback")[0]).toMatchObject({ run: "r1", reason: "error", error: "rate limited", discarded_messages: 2 });
+  });
+
+  it("restart: conv.restore says what was recovered", async () => {
+    const a = await setup();
+    await a.conv.ask("x");
+    const b = await setup({ db: a.db });
+    expect(b.trace.records("conv.restore")[0]).toMatchObject({ group: "g1", messages: 2, archived: false, flushed: false });
+  });
+
+  it("the memory flush and compaction show up in order, with the conversation's state transitions", async () => {
+    const { conv, trace } = await setup({ script: bigScript, context: flushCtx });
+    for (let i = 1; i <= 14; i++) await conv.ask(`第${i}个问题 ` + tokensOf(380), { run: `r${i}` });
+    const flow = trace.records("flush.start", "flush.ok", "conv.state", "compact.done");
+    expect(flow.map((r) => r.ev === "conv.state" ? `${r.from}>${r.to}` : r.ev)).toEqual(["flush.start", "fresh>flushing", "flush.ok", "flushing>flushed", "compact.done", "flushed>fresh"]);
+    const flushTurn = trace.records("turn.start").filter((r) => r.kind === "flush");
+    expect(flushTurn).toHaveLength(1);
+    expect(flushTurn[0]!.run).toBe(trace.records("flush.start")[0]!.run); // belongs to the run that triggered it
+    const done = trace.records("compact.done")[0]!;
+    expect(done.tokens_after).toBeLessThan(done.tokens_before);
+    expect(done.archived_messages).toBeGreaterThan(0);
+    expect(trace.records("compact.done")[0]!.turn).toBeUndefined(); // not attributed to the flush turn
+  });
+
+  it("a failed flush is recorded with its error and the state goes back to fresh", async () => {
+    const script: Script = (p, n) => (p.includes("整理记忆") ? [assistantError("overloaded")] : bigScript(p, n));
+    const { conv, trace } = await setup({ script, context: flushCtx });
+    for (let i = 1; i <= 10; i++) await conv.ask(`第${i}个问题 ` + tokensOf(380));
+    expect(trace.records("flush.fail")[0]!.error).toMatchObject({ message: "overloaded" });
+    expect(trace.records("conv.state").filter((r) => r.to === "fresh")[0]).toMatchObject({ from: "flushing", reason: expect.stringContaining("failed") });
+  });
+
+  it("Pi's tool and model events are attributed to the turn that caused them", async () => {
+    const { conv, session, trace } = await setup();
+    const original = session.prompt.bind(session);
+    session.prompt = async (t: string) => {
+      session.listeners.forEach((l) => l({ type: "tool_execution_start", toolCallId: "c1", toolName: "read", args: { path: "/persona.md" } }));
+      session.listeners.forEach((l) => l({ type: "tool_execution_end", toolCallId: "c1", toolName: "read", isError: false, result: { content: [{ type: "text", text: "abc" }] } }));
+      await original(t);
+    };
+    await conv.ask("hi", { run: "r9" });
+    expect(trace.records("tool.start", "tool.end").map((r) => [r.ev, r.run, r.turn, r.tool])).toEqual([
+      ["tool.start", "r9", "t1", "read"],
+      ["tool.end", "r9", "t1", "read"],
+    ]);
+  });
+
+  it("with content capture the prompt is recorded too", async () => {
+    const session = fakeSession({});
+    const trace = memoryEventLog({ captureContent: true });
+    const conv = await PiConversation.create({ groupId: "g", session: session as never, store: new ConversationStore(openDb(":memory:")), context: ctx, events: trace.events });
+    await conv.ask("你好呀");
+    expect(trace.records("turn.start")[0]!.prompt).toBe("你好呀");
   });
 });

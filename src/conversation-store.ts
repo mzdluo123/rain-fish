@@ -6,6 +6,15 @@ import type { StoredAgentMessage, StoredArchive } from "./types.js";
 export class ConversationStore {
   constructor(private readonly db: Database) {}
 
+  /** Whether the memory flush already ran in this group's current compaction cycle. */
+  loadFlushed(groupId: string): boolean {
+    return this.db.query("SELECT flushed FROM conversation_flags WHERE group_id = ?").get(groupId) !== null;
+  }
+
+  setFlushed(groupId: string): void {
+    this.db.query("INSERT OR REPLACE INTO conversation_flags (group_id, flushed) VALUES (?, 1)").run(groupId);
+  }
+
   load(groupId: string): { archive?: StoredArchive; messages: StoredAgentMessage[] } {
     const a = this.db.query("SELECT through_seq, source_text FROM agent_archives WHERE group_id = ?").get(groupId) as
       | { through_seq: number; source_text: string }
@@ -46,6 +55,7 @@ export class ConversationStore {
           )
           .run(groupId, throughSeq, sourceText, Math.floor(Date.now() / 1000));
         this.db.query("DELETE FROM agent_messages WHERE group_id = ? AND seq <= ?").run(groupId, throughSeq);
+        this.db.query("DELETE FROM conversation_flags WHERE group_id = ?").run(groupId); // a new compaction cycle: the memory flush is due again
       })
       .immediate();
   }

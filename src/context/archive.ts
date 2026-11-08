@@ -3,10 +3,10 @@ import type { Model } from "@mariozechner/pi-ai";
 import { frames, plannedFrameTokens, renderMany, resolveShape, serializeConversation } from "@oh-my-pi/snapcompact";
 import { estimateTextTokens } from "./estimate.js";
 
-/** Start of the archive message's first text block; how the archive is recognised in history. */
-export const ARCHIVE_MARKER = "[归档]";
+/** Start of the archive message's first text block; how the archive is recognised in history. Group messages are `<message>` elements and their text is escaped, so no member can produce it. */
+export const ARCHIVE_MARKER = "<system>[归档]";
 // Not persona text: protocol framing that tells the model what the archive is.
-const LEAD_IN = `${ARCHIVE_MARKER} 以下是此前对话的归档，按时间从早到晚排列，请当作已经发生的历史。`;
+const LEAD_IN = `${ARCHIVE_MARKER} 以下是此前对话的归档，按时间从早到晚排列，请当作已经发生的历史。</system>`;
 
 export function isArchiveMessage(m: AgentMessage): boolean {
   if (m.role !== "user") return false;

@@ -5,7 +5,8 @@ import { PiConversation } from "./conversation.js";
 import { ConversationStore } from "./conversation-store.js";
 import { createModelRegistry, resolveModel } from "./model.js";
 import { MessageStore } from "./store.js";
-import type { Config, GroupSender, Logger } from "./types.js";
+import { noopEventLog } from "./trace/event-log.js";
+import type { Config, EventLog, GroupSender, Logger } from "./types.js";
 import { VirtualFs } from "./vfs.js";
 
 /**
@@ -25,7 +26,7 @@ export function loadSystemPrompt(file: string): string {
   return text;
 }
 
-export function createPiConversationFactory(db: Database, config: Config, logger: Logger, send: GroupSender) {
+export function createPiConversationFactory(db: Database, config: Config, logger: Logger, send: GroupSender, events: EventLog = noopEventLog) {
   loadSystemPrompt(config.promptFile); // fail at startup, not on the first message
   const registry = createModelRegistry();
   const model = config.model ? resolveModel(registry, config.model) : undefined;
@@ -54,6 +55,7 @@ export function createPiConversationFactory(db: Database, config: Config, logger
       if (event.type === "tool_execution_start") toolLog.debug(`${event.toolName} ${JSON.stringify(event.args)}`);
     });
     logger.info(`started agent session for ${groupId}`);
-    return PiConversation.create({ groupId, session, store: conversations, context: config.context, logger });
+    events.emit("session.start", { group: groupId, model: session.model ? `${session.model.provider}/${session.model.id}` : undefined, tools: session.getActiveToolNames(), system_prompt_chars: session.systemPrompt.length });
+    return PiConversation.create({ groupId, session, store: conversations, context: config.context, logger, events });
   };
 }

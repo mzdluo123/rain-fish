@@ -167,6 +167,22 @@ export interface Logger {
 
 export type LogLevel = Config["logLevel"];
 
+/**
+ * Structured, machine-readable record of what the program and the agent did: one JSON object per event,
+ * written to a rotating file (see `src/trace/`). For observability and after-the-fact analysis, not for
+ * humans watching a terminal (that is `Logger`). `emit` never throws and never blocks on anything slow.
+ */
+export interface EventLog {
+  /** `event` is `domain.action` (e.g. `run.start`); `data` is merged into the record (clipped, JSON-safe). */
+  emit(event: string, data?: Record<string, unknown>): void;
+  /** A view that adds `bound` (e.g. `{ group }`) to every event it emits. */
+  child(bound: Record<string, unknown>): EventLog;
+  /** Whether message text, tool arguments and results may be recorded (`TRACE_CONTENT`). */
+  readonly captureContent: boolean;
+}
+
+export type TraceConfig = Config["trace"];
+
 // ---- core (the only shapes the bot logic ever sees) --------------------------------
 
 /** A validated group message, already flattened to plain text. */
@@ -182,10 +198,33 @@ export interface GroupMessage extends StoredMessage {
   replyToMessageId?: string;
 }
 
+/** A group message queued for the agent; `addressed`: it @-mentions the bot or replies to one of its messages. */
+export interface PendingMessage {
+  msg: GroupMessage;
+  addressed: boolean;
+}
+
 /** What the bot needs from the QQ connection. */
 export interface QQApi {
   sendGroupMessage(groupId: string, message: OutboundSegment[]): Promise<{ messageId: string }>;
 }
+
+/** One page of group history from the QQ API, oldest message first. */
+export interface GroupHistoryPage {
+  /** Messages with text, converted; the bot's own and others'. */
+  messages: GroupMessage[];
+  /** The oldest item the API returned (even if it had no text): where the next, older page starts. Undefined = page was empty. */
+  oldest?: { seq: string; ts: number };
+}
+
+/** What the startup backfill needs from the QQ connection. */
+export interface QQHistoryApi {
+  /** Up to `count` messages ending at `beforeSeq` (inclusive; undefined = the latest), oldest first. */
+  getGroupHistory(groupId: string, beforeSeq: string | undefined, count: number): Promise<GroupHistoryPage>;
+  getGroupList(): Promise<string[]>;
+}
+
+export type BackfillConfig = Config["backfill"];
 
 /** Posts `text` to a group (split if long), optionally quoting `replyTo`. Rejects if delivery fails. */
 export type GroupSender = (groupId: string, text: string, replyTo?: string) => Promise<void>;
@@ -210,6 +249,7 @@ export interface BotOptions {
   /** Only handle these group ids; omit for all groups. */
   groups?: ReadonlySet<string>;
   logger?: Logger;
+  events?: EventLog;
 }
 
 export interface OneBotClientOptions {
@@ -219,6 +259,11 @@ export interface OneBotClientOptions {
   token?: string;
   /** Called only with validated, converted group messages. */
   onGroupMessage: (msg: GroupMessage) => void | Promise<void>;
+  /** The bot's own QQ id, announced by the connection's lifecycle event. */
+  onSelfId?: (selfId: string) => void;
+  /** Called each time the WebSocket connects (the API is usable from then on). */
+  onConnect?: () => void;
+  events?: EventLog;
   minBackoffMs?: number;
   maxBackoffMs?: number;
   requestTimeoutMs?: number;
@@ -238,8 +283,11 @@ export type ContextConfig = Config["context"];
 
 /** One agent conversation (a group's, or the CLI's). */
 export interface Conversation {
-  /** Runs the agent on `prompt` and returns its final text (the group never sees it: only `send` posts). Throws if the model call fails. */
-  ask(prompt: string): Promise<string>;
+  /**
+   * Runs the agent on `prompt` and returns its final text (the group never sees it: only `send` posts).
+   * `run` correlates the turn's events with the responder's. Throws if the model call fails.
+   */
+  ask(prompt: string, ctx?: { run?: string }): Promise<string>;
 }
 
 export type ConversationFactory = (groupId: string) => Promise<Conversation>;

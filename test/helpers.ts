@@ -3,6 +3,7 @@ import type { Logger } from "../src/types.js";
 import { openDb } from "../src/db/open.js";
 import { MessageStore } from "../src/store.js";
 import { VirtualFs } from "../src/vfs.js";
+import { JsonlEventLog } from "../src/trace/event-log.js";
 
 /** A fresh in-memory database with the agent's (empty) filesystem and message store, a system prompt, and a `send` that records (or fails with `sendError`). */
 export function makeEnv(systemPrompt = "# Persona\nYou are TESTBOT.", sendError?: string) {
@@ -60,3 +61,19 @@ export const toolResultMsg = (id: string, name: string, text: string): AgentMess
 });
 /** n tokens' worth of text under the estimator (1 token per CJK character). */
 export const tokensOf = (n: number, ch = "字") => ch.repeat(n);
+
+// ---- event log -------------------------------------------------------------------------
+
+/** An event log that keeps its records in memory (parsed back from the JSON lines it would write). */
+export function memoryEventLog(opts: { captureContent?: boolean } = {}) {
+  const lines: string[] = [];
+  const events = JsonlEventLog.create({ write: (l) => void lines.push(l) }, { captureContent: opts.captureContent ?? false, boot: "test" });
+  const all = () => lines.map((l) => JSON.parse(l) as Record<string, any>);
+  return {
+    events,
+    /** All records, or only those whose `ev` matches. */
+    records: (...evs: string[]) => all().filter((r) => evs.length === 0 || evs.includes(r.ev)),
+    /** Just the event names, in order. */
+    names: (...evs: string[]) => all().filter((r) => evs.length === 0 || evs.includes(r.ev)).map((r) => r.ev as string),
+  };
+}

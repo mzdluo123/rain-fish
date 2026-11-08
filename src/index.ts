@@ -3,13 +3,13 @@ import { bootstrap, orExit } from "./bootstrap.js";
 import { createPiConversationFactory } from "./conversation-factory.js";
 import { openDb } from "./db/open.js";
 
-const { config, logger } = bootstrap();
+const { config, logger, events } = bootstrap();
 const db = openDb(config.dbPath); // one SQLite file holds every piece of state
 // The CLI has no group: `send` prints what the agent would post.
 const conversation = await orExit(logger, () =>
   createPiConversationFactory(db, config, logger, async (_groupId, text) => {
     process.stdout.write(`\n[send] ${text}\n`);
-  }),
+  }, events),
 )("cli");
 
 conversation.session.subscribe((event) => {
@@ -20,6 +20,7 @@ conversation.session.subscribe((event) => {
   }
 });
 
+events.emit("proc.start", { entry: "cli", pid: process.pid, bun: Bun.version, db: config.dbPath, model: config.model ?? "(Pi default)" });
 logger.info(`database ${config.dbPath}`);
 logger.info(`tools: ${conversation.session.getActiveToolNames().join(", ")} (code execution disabled)`);
 logger.info("type a message; 'exit' or Ctrl+C to quit");
@@ -40,4 +41,5 @@ for await (const raw of rl) {
   rl.prompt();
 }
 rl.close();
+events.emit("proc.stop", { signal: "exit" });
 db.close();

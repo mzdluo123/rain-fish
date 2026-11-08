@@ -18,15 +18,15 @@ beforeAll(async () => {
 
 describe("file tools work on the database", () => {
   it("write -> read -> edit -> ls -> find round trip, stored only in the files table", async () => {
-    await call("write", { path: "notes/a.txt", content: "hello world\nsecond line" });
-    expect(env.fs.readText("/notes/a.txt")).toBe("hello world\nsecond line");
-    expect(await call("read", { path: "/notes/a.txt" })).toContain("hello world");
-    await call("edit", { path: "notes/a.txt", edits: [{ oldText: "hello", newText: "bye" }] });
-    expect(env.fs.readText("/notes/a.txt")).toBe("bye world\nsecond line");
+    await call("write", { path: "notes/a.md", content: "hello world\nsecond line" });
+    expect(env.fs.readText("/notes/a.md")).toBe("hello world\nsecond line");
+    expect(await call("read", { path: "/notes/a.md" })).toContain("hello world");
+    await call("edit", { path: "notes/a.md", edits: [{ oldText: "hello", newText: "bye" }] });
+    expect(env.fs.readText("/notes/a.md")).toBe("bye world\nsecond line");
     expect(await call("ls", { path: "/" })).toMatch(/notes\//);
-    expect(await call("ls", { path: "/notes" })).toContain("a.txt");
-    expect(await call("find", { pattern: "*.txt" })).toBe("notes/a.txt");
-    expect(await call("find", { pattern: "*.txt", path: "/notes" })).toBe("a.txt");
+    expect(await call("ls", { path: "/notes" })).toContain("a.md");
+    expect(await call("find", { pattern: "*.md" })).toBe("notes/a.md");
+    expect(await call("find", { pattern: "*.md", path: "/notes" })).toBe("a.md");
     expect(await call("find", { pattern: "*.zip" })).toMatch(/No files found/);
   });
 
@@ -48,13 +48,13 @@ describe("the host disk is unreachable", () => {
   });
 
   it("writes outside the working area land in the database, not on the host", async () => {
-    const leak = `/tmp/vfs-leak-${crypto.randomUUID()}.txt`;
+    const leak = `/tmp/vfs-leak-${crypto.randomUUID()}.md`;
     await call("write", { path: leak, content: "x" });
     expect(env.fs.readText(leak)).toBe("x");
     expect(existsSync(leak)).toBe(false);
-    await call("write", { path: "../../etc/vfs-escape.txt", content: "x" });
-    expect(env.fs.exists("/etc/vfs-escape.txt")).toBe(true);
-    expect(existsSync("/etc/vfs-escape.txt")).toBe(false);
+    await call("write", { path: "../../etc/vfs-escape.md", content: "x" });
+    expect(env.fs.exists("/etc/vfs-escape.md")).toBe(true);
+    expect(existsSync("/etc/vfs-escape.md")).toBe(false);
     expect(readFileSync("/etc/passwd", "utf-8")).toContain("root"); // host file untouched
   });
 });

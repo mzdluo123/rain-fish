@@ -18,7 +18,7 @@ export function createSendTool(send: SendFn) {
     promptSnippet: "Post a message to the group (ends the run)",
     parameters: Type.Object({
       text: Type.String({ description: "The message text." }),
-      reply_to: Type.Optional(Type.String({ description: "Id of a message (the number after # in its header) to quote; omit to post without quoting." })),
+      reply_to: Type.Optional(Type.String({ description: "Id of a message (the id attribute of its <message> element) to quote; omit to post without quoting." })),
     }),
     execute: async (_toolCallId, p) => {
       const text = p.text.trim();

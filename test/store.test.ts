@@ -101,7 +101,7 @@ describe("persistence and migrations", () => {
     const db = new Database(":memory:");
     migrate(db, migrations.slice(0, 1));
     db.query("INSERT INTO messages (platform, group_id, message_id, user_id, nickname, ts, text) VALUES ('qq','1','9','1','A',1,'旧消息里有牛奶')").run();
-    expect(migrate(db, migrations)).toEqual([2, 3, 4]);
+    expect(migrate(db, migrations)).toEqual(migrations.slice(1).map((m) => m.version));
     const hit = db.query("SELECT rowid FROM messages_fts WHERE messages_fts MATCH '\"牛奶\"'").all();
     expect(hit).toHaveLength(1);
   });

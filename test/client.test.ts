@@ -170,3 +170,57 @@ describe("sendGroupMessage", () => {
     await expect(client.sendGroupMessage("1", [{ type: "text", data: { text: "x" } }])).rejects.toThrow(/connection closed/);
   });
 });
+
+describe("history API", () => {
+  const item = (seq: number, extra: object = {}) => ({
+    message_seq: seq, message_id: 9000 + seq, group_id: 100, user_id: 42, time: 1_700_000_000 + seq,
+    sender: { nickname: "Alice" }, message: [{ type: "text", data: { text: `历史${seq}` } }], ...extra,
+  });
+
+  it("get_group_msg_history: sends the paging request and converts items, filling fields NapCat leaves out and skipping bad items", async () => {
+    const requests: any[] = [];
+    const server = fakeNapCat({
+      onMessage(ws, data) {
+        const req = JSON.parse(data);
+        requests.push(req);
+        const messages = [item(7), { ...item(5), self_id: 10001 }, item(6, { message: [] }), { nonsense: true }, item(4, { group_id: undefined })];
+        ws.send(JSON.stringify({ status: "ok", retcode: 0, data: { messages }, echo: req.echo }));
+      },
+    });
+    const { client, logs, entries } = connect(server.port!);
+    await until(() => logs.some((l) => l.startsWith("connected")));
+    const page = await client.getGroupHistory("100", "8", 100);
+    expect(requests[0]).toMatchObject({ action: "get_group_msg_history", params: { group_id: 100, message_seq: 8, count: 100 } });
+    expect(page.messages.map((m) => [m.messageId, m.groupId, m.text])).toEqual([
+      ["9004", "100", "历史4"], // group_id filled from the request
+      ["9005", "100", "历史5"],
+      ["9007", "100", "历史7"], // sorted oldest first; the item without text (6) is dropped
+    ]);
+    expect(page.oldest).toEqual({ seq: "4", ts: 1_700_000_004 }); // the cursor for the next, older page
+    expect(entries.some((e) => e.level === "warn" && e.msg.includes("skipped 1 invalid"))).toBe(true);
+
+    await client.getGroupHistory("100", undefined, 50);
+    expect(requests[1].params.message_seq).toBeUndefined(); // the latest messages
+  });
+
+  it("rejects when the API reports a failure", async () => {
+    const server = fakeNapCat({ onMessage: (ws, data) => ws.send(JSON.stringify({ status: "failed", retcode: 1200, wording: "no such group", echo: JSON.parse(data).echo })) });
+    const { client, logs } = connect(server.port!);
+    await until(() => logs.some((l) => l.startsWith("connected")));
+    await expect(client.getGroupHistory("100", undefined, 10)).rejects.toThrow(/no such group/);
+  });
+
+  it("get_group_list returns the group ids", async () => {
+    const server = fakeNapCat({ onMessage: (ws, data) => ws.send(JSON.stringify({ status: "ok", retcode: 0, data: [{ group_id: 100, group_name: "a" }, { group_id: "200" }], echo: JSON.parse(data).echo })) });
+    const { client, logs } = connect(server.port!);
+    await until(() => logs.some((l) => l.startsWith("connected")));
+    expect(await client.getGroupList()).toEqual(["100", "200"]);
+  });
+
+  it("calls onConnect each time the socket connects", async () => {
+    let n = 0;
+    const server = fakeNapCat();
+    connect(server.port!, { onConnect: () => void n++ });
+    await until(() => n === 1);
+  });
+});

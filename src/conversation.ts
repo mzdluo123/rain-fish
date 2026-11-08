@@ -2,10 +2,14 @@ import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
 import { buildArchiveMessage, extendArchiveSource, serializeForArchive, type ArchiveBudget } from "./context/archive.js";
 import { estimateContextTokens, estimateMessageTokens, estimateTextTokens } from "./context/estimate.js";
+import { MEMORY_FLUSH_PROMPT } from "./context/memory.js";
 import { pruneExpensive } from "./context/prune.js";
 import type { ConversationStore } from "./conversation-store.js";
 import { noopLogger } from "./logger.js";
-import type { ContextConfig, Conversation, Logger } from "./types.js";
+import { SEND_TOOL } from "./tools/send.js";
+import { noopEventLog, preview } from "./trace/event-log.js";
+import { traceSession } from "./trace/session-events.js";
+import type { ContextConfig, Conversation, EventLog, Logger } from "./types.js";
 
 export interface PiConversationDeps {
   groupId: string;
@@ -13,6 +17,7 @@ export interface PiConversationDeps {
   store: ConversationStore;
   context: ContextConfig;
   logger?: Logger;
+  events?: EventLog;
 }
 
 /**
@@ -24,18 +29,27 @@ export interface PiConversationDeps {
 export class PiConversation implements Conversation {
   /** seq of each live message in `state.messages` (the archive message, if present, has none). */
   private seqs: number[] = [];
+  /** The memory flush already ran in this compaction cycle (reset when history is compacted). */
+  private flushed = false;
   private archived = false;
   private archiveSource = "";
   private readonly log: Logger;
+  private readonly events: EventLog;
+  /** Ids of the run (from the responder) and turn in progress, stamped on every event emitted meanwhile. */
+  private cur: { run?: string; turn?: string; kind?: string } = {};
+  private turnCount = 0;
 
   private constructor(private readonly d: PiConversationDeps) {
     this.log = (d.logger ?? noopLogger).withTag("context");
+    this.events = (d.events ?? noopEventLog).child({ group: d.groupId });
   }
 
   static async create(deps: PiConversationDeps): Promise<PiConversation> {
     const c = new PiConversation(deps);
     await c.restore();
     c.installPruning();
+    traceSession(deps.session, c.events, () => c.cur);
+    c.emit("conv.restore", { messages: c.seqs.length, archived: c.archived, flushed: c.flushed });
     return c;
   }
 
@@ -44,26 +58,59 @@ export class PiConversation implements Conversation {
     return this.d.session;
   }
 
-  async ask(prompt: string): Promise<string> {
-    await this.compactIfNeeded(prompt);
+  async ask(prompt: string, ctx: { run?: string } = {}): Promise<string> {
+    this.cur = { run: ctx.run };
+    try {
+      await this.flushMemoryIfNeeded(prompt);
+      await this.compactIfNeeded(prompt);
+      return await this.runTurn(prompt, "message");
+    } finally {
+      this.cur = {};
+    }
+  }
+
+  /** Trace event tagged with the group and, while a run is in progress, its `run` and current `turn`. */
+  private emit(event: string, data: Record<string, unknown> = {}): void {
+    this.events.emit(event, { ...this.cur, ...data });
+  }
+
+  /** One model turn: the prompt, the agent's whole tool loop, then persistence. A failed turn leaves no trace. */
+  private async runTurn(prompt: string, kind: "message" | "flush"): Promise<string> {
     const state = this.d.session.agent.state;
     const from = state.messages.length;
+    this.cur = { ...this.cur, turn: `t${++this.turnCount}`, kind };
+    const t0 = Date.now();
+    this.emit("turn.start", { prompt_chars: prompt.length, context_messages: from, context_tokens: this.contextTokens(prompt), prompt: preview(this.events, prompt) });
     let added: AgentMessage[];
     try {
       await this.d.session.prompt(prompt);
       added = state.messages.slice(from);
     } catch (err) {
       state.messages = state.messages.slice(0, from);
+      this.emit("turn.rollback", { ms: Date.now() - t0, reason: "model call threw", error: err });
       throw err;
     }
     const last = added.findLast((m) => m.role === "assistant");
     if (!last || last.role !== "assistant" || last.stopReason === "error" || last.stopReason === "aborted") {
       // A failed turn leaves no trace: not in memory, not in the database.
       state.messages = state.messages.slice(0, from);
-      throw new Error(last?.role === "assistant" ? (last.errorMessage ?? `model call ${last.stopReason}`) : "no reply from the model");
+      const reason = last?.role === "assistant" ? (last.errorMessage ?? `model call ${last.stopReason}`) : "no reply from the model";
+      this.emit("turn.rollback", { ms: Date.now() - t0, reason: last?.role === "assistant" ? last.stopReason : "no assistant message", error: reason, discarded_messages: added.length });
+      throw new Error(reason);
     }
     this.seqs.push(...this.d.store.append(this.d.groupId, added));
-    return last.content.map((c) => (c.type === "text" ? c.text : "")).join("").trim();
+    const text = last.content.map((c) => (c.type === "text" ? c.text : "")).join("").trim();
+    const assistants = added.filter((m) => m.role === "assistant");
+    this.emit("turn.end", {
+      ms: Date.now() - t0,
+      stop_reason: last.stopReason,
+      added_messages: added.length,
+      llm_calls: assistants.length,
+      tool_calls: added.filter((m) => m.role === "toolResult").length,
+      final_chars: text.length,
+      persisted_through_seq: this.seqs.at(-1),
+    });
+    return text;
   }
 
   private get budget(): ArchiveBudget {
@@ -80,6 +127,7 @@ export class PiConversation implements Conversation {
     }
     restored.push(...messages.map((m) => m.message));
     this.seqs = messages.map((m) => m.seq);
+    this.flushed = this.d.store.loadFlushed(this.d.groupId);
     if (restored.length > 0) {
       this.d.session.agent.state.messages = restored;
       this.log.info(`group ${this.d.groupId}: restored ${messages.length} message(s)${archive ? " + archive" : ""}`);
@@ -95,12 +143,52 @@ export class PiConversation implements Conversation {
       pruneExpensive(previous ? await previous(messages, signal) : messages, { recentTokens, minBlockTokens: pruneMinTokens });
   }
 
+  /**
+   * Just before compaction would retire older history, give the agent one turn to write what matters
+   * into its files (without `send`: this turn must not speak in the group). Runs once per cycle.
+   * A failed flush is logged and not fatal: the context must still be bounded.
+   */
+  private async flushMemoryIfNeeded(prompt: string): Promise<void> {
+    const { session, context: c, groupId } = this.d;
+    if (this.flushed) return;
+    const tokens = this.contextTokens(prompt);
+    const threshold = c.compactTokens * c.flushRatio;
+    if (tokens <= threshold) return;
+
+    this.log.info(`group ${groupId}: context ~${tokens} tokens, nearing compaction at ${c.compactTokens}; asking the agent to save memory`);
+    this.emit("flush.start", { tokens, threshold, compact_at: c.compactTokens });
+    this.emit("conv.state", { from: "fresh", to: "flushing", reason: "context near compaction" });
+    const t0 = Date.now();
+    const tools = session.getActiveToolNames();
+    session.setActiveToolsByName(tools.filter((n) => n !== SEND_TOOL));
+    try {
+      await this.runTurn(MEMORY_FLUSH_PROMPT, "flush");
+      this.flushed = true;
+      this.d.store.setFlushed(groupId);
+      this.log.success(`group ${groupId}: memory flush done`);
+      this.emit("flush.ok", { ms: Date.now() - t0 });
+      this.emit("conv.state", { from: "flushing", to: "flushed", reason: "flush turn done" });
+    } catch (err) {
+      this.log.warn(`group ${groupId}: memory flush failed, continuing: ${err instanceof Error ? err.message : String(err)}`);
+      this.emit("flush.fail", { ms: Date.now() - t0, error: err });
+      this.emit("conv.state", { from: "flushing", to: "fresh", reason: "flush failed, retried on the next message" });
+    } finally {
+      session.setActiveToolsByName(tools);
+      this.cur = { run: this.cur.run }; // the flush turn is over: later events (compaction, the real turn) are not part of it
+    }
+  }
+
+  private contextTokens(prompt: string): number {
+    const { session, context: c } = this.d;
+    const view = pruneExpensive(session.agent.state.messages, { recentTokens: c.recentTokens, minBlockTokens: c.pruneMinTokens });
+    return estimateContextTokens(session.systemPrompt, view) + estimateTextTokens(prompt);
+  }
+
   /** Level 2: snap-compact older history once the (pruned) context passes the threshold. */
   private async compactIfNeeded(prompt: string): Promise<void> {
     const { session, context: c, groupId } = this.d;
     const state = session.agent.state;
-    const view = pruneExpensive(state.messages, { recentTokens: c.recentTokens, minBlockTokens: c.pruneMinTokens });
-    const tokens = estimateContextTokens(session.systemPrompt, view) + estimateTextTokens(prompt);
+    const tokens = this.contextTokens(prompt);
     if (tokens <= c.compactTokens) return;
 
     const offset = this.archived ? 1 : 0;
@@ -108,8 +196,10 @@ export class PiConversation implements Conversation {
     const cut = this.findCut(messages, offset);
     if (cut <= offset) {
       this.log.warn(`group ${groupId}: context ~${tokens} tokens but no complete turn is older than the recent window; not compacting`);
+      this.emit("compact.skip", { tokens, threshold: c.compactTokens, reason: "no complete turn older than the recent window" });
       return;
     }
+    const t0 = Date.now();
     const source = extendArchiveSource(this.archiveSource, serializeForArchive(messages.slice(offset, cut)), this.budget);
     const archive = await buildArchiveMessage(source, this.budget);
 
@@ -118,10 +208,13 @@ export class PiConversation implements Conversation {
     this.seqs = this.seqs.slice(cut - offset);
     this.archiveSource = source;
     this.archived = true;
+    const wasFlushed = this.flushed;
+    this.flushed = false;
     this.d.store.archive(groupId, throughSeq, source);
-    this.log.success(
-      `group ${groupId}: compacted ${cut - offset} message(s) into the archive (~${tokens} -> ~${estimateContextTokens(session.systemPrompt, state.messages)} tokens)`,
-    );
+    const after = estimateContextTokens(session.systemPrompt, state.messages);
+    this.log.success(`group ${groupId}: compacted ${cut - offset} message(s) into the archive (~${tokens} -> ~${after} tokens)`);
+    this.emit("compact.done", { archived_messages: cut - offset, kept_messages: messages.length - cut, tokens_before: tokens, tokens_after: after, archive_chars: source.length, through_seq: throughSeq, ms: Date.now() - t0 });
+    this.emit("conv.state", { from: wasFlushed ? "flushed" : "fresh", to: "fresh", reason: "compaction" });
   }
 
   /**

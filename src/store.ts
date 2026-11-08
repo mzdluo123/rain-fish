@@ -35,6 +35,11 @@ export class MessageStore {
     return tx.immediate();
   }
 
+  /** Number of stored messages of a group. */
+  countGroup(groupId: string): number {
+    return (this.db.query("SELECT COUNT(*) AS n FROM messages WHERE group_id = ?").get(groupId) as { n: number }).n;
+  }
+
   get(platform: string, groupId: string, messageId: string): StoredMessage | undefined {
     const row = this.db
       .query("SELECT * FROM messages WHERE platform = ? AND group_id = ? AND message_id = ?")
