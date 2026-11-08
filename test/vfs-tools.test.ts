@@ -94,3 +94,21 @@ describe("grep over database files", () => {
     await expect(call("grep", { pattern: "(", path: "/g" })).rejects.toThrow(/Invalid regex/);
   });
 });
+
+describe("personaTree", () => {
+  it("is the entry file plus the notes linked from it, however deep", async () => {
+    const { personaTree } = await import("../src/context/persona.js");
+    const { VirtualFs } = await import("../src/vfs.js");
+    const { openDb } = await import("../src/db/open.js");
+    const fs = new VirtualFs(openDb(":memory:"));
+    fs.mkdir("/members");
+    fs.mkdir("/other");
+    fs.writeFile("/persona.md", "# 我\n- [喜好](/members/likes.md)\n- [群规](/rules.md) （还没写）\n");
+    fs.writeFile("/members/likes.md", "细节在 [牛奶](/members/milk.md)，回到 [我](/persona.md)\n");
+    fs.writeFile("/members/milk.md", "热的");
+    fs.writeFile("/other/unrelated.md", "与档案无关");
+    const tree = personaTree(fs);
+    expect([...tree].sort()).toEqual(["/members/likes.md", "/members/milk.md", "/persona.md", "/rules.md"]);
+    expect(personaTree(new VirtualFs(openDb(":memory:"))).has("/persona.md")).toBe(true); // even before the file exists
+  });
+});

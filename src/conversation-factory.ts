@@ -10,7 +10,7 @@ import { noopEventLog } from "./trace/event-log.js";
 import type { Config, EventLog, GroupImageSender, GroupSender, Logger } from "./types.js";
 import { ImageStore } from "./image-store.js";
 import { RunBudget } from "./run-budget.js";
-import { PERSONA_PATH } from "./context/persona.js";
+import { PERSONA_PATH, personaTree } from "./context/persona.js";
 import { createModelImage } from "./image-resize.js";
 import { VirtualFs } from "./vfs.js";
 
@@ -53,7 +53,7 @@ export async function createPiConversationFactory(db: Database, config: Config, 
   if (model && !runtime.hasConfiguredAuth(model.provider)) {
     logger.warn(`no credentials for provider "${model.provider}": replies will fail until an API key is configured (see .env.example)`);
   }
-  logger.info(`prompt ${config.promptFile} · model ${config.model ?? "(Pi default)"} · context: prune >${config.context.pruneMinTokens}t outside ${config.context.recentTokens}t recent (in batches of ${config.context.pruneBatchBlocks}), snap-compact at ${config.context.compactTokens}t`);
+  logger.info(`prompt ${config.promptFile} · model ${config.model ?? "(Pi default)"} · context: keep ${config.context.recentTokens}t recent, snap-compact at ${config.context.compactTokens}t (archive ${config.context.archiveTokens}t)`);
 
   const fs = new VirtualFs(db);
   const store = new MessageStore(db);
@@ -80,7 +80,7 @@ export async function createPiConversationFactory(db: Database, config: Config, 
       modelRuntime: runtime,
       thinkingLevel: config.thinkingLevel,
     });
-    const conversation = await PiConversation.create({ groupId, session, store: conversations, context: config.context, logger, events, budget, persona: () => (fs.exists(PERSONA_PATH) ? fs.readText(PERSONA_PATH) : undefined) });
+    const conversation = await PiConversation.create({ groupId, session, store: conversations, context: config.context, logger, events, budget, persona: () => (fs.exists(PERSONA_PATH) ? fs.readText(PERSONA_PATH) : undefined), personaPaths: () => personaTree(fs) });
     let llmStarted = Date.now();
     session.subscribe((event) => {
       if (event.type === "tool_execution_start") toolLog.debug(`${event.toolName} ${JSON.stringify(event.args)}`);

@@ -7,7 +7,6 @@ import { imageBlockTokens } from "./context/image-size.js";
 import { MEMORY_FLUSH_PROMPT } from "./context/memory.js";
 import { SEND_NUDGE_PROMPT, SPEAK_NUDGE_PROMPT } from "./context/nudge.js";
 import { personaPinMessage } from "./context/persona.js";
-import { pruneExpensive, type PruneState } from "./context/prune.js";
 import type { ConversationStore } from "./conversation-store.js";
 import { noopLogger } from "./logger.js";
 import { SPEAK_TOOLS } from "./tools/send.js";
@@ -30,13 +29,14 @@ export interface PiConversationDeps {
   budget?: RunBudget;
   /** The agent's self-profile (its `/persona.md`), pinned at the top of every request; undefined = none yet. Read once per run. */
   persona?: () => string | undefined;
+  /** Paths of the profile files (entry + linked notes); the archive leaves out what the agent read from and wrote to them. Called when compacting. */
+  personaPaths?: () => ReadonlySet<string>;
 }
 
 /**
- * One persistent agent conversation with two-level context management:
- *  1. every model call sees a pruned view in which expensive blocks of old messages are cleared;
- *  2. when the context still grows past the threshold, older history is snap-compacted into an archive.
- * Everything is persisted in SQLite, so a restart resumes the same (compacted) conversation.
+ * One persistent agent conversation. The context only ever shrinks by compaction: when it grows past the threshold,
+ * older history is snap-compacted into an archive (pictures are already scaled down when they enter, the agent's
+ * profile is pinned outside the history). Everything is persisted in SQLite, so a restart resumes the same (compacted) conversation.
  */
 export class PiConversation implements Conversation {
   /** seq of each live message in `state.messages` (the archive message, if present, has none). */
@@ -50,8 +50,6 @@ export class PiConversation implements Conversation {
   /** Ids of the run (from the responder) and turn in progress, stamped on every event emitted meanwhile. */
   private cur: { run?: string; turn?: string; kind?: string } = {};
   private turnCount = 0;
-  /** How far level-1 clearing has gone in the live transcript (see `PruneState`). */
-  private readonly pruneState: PruneState = { through: 0 };
   /** The persona as of the start of the current run (an edit during the run shows up in the next one: the request prefix stays stable). */
   private pinned?: AgentMessage;
 
@@ -64,7 +62,7 @@ export class PiConversation implements Conversation {
     const c = new PiConversation(deps);
     c.refreshPersona();
     await c.restore();
-    c.installPruning();
+    c.installPersonaPin();
     traceSession(deps.session, c.events, () => c.cur);
     c.emit("conv.restore", { messages: c.seqs.length, archived: c.archived, flushed: c.flushed });
     return c;
@@ -107,6 +105,15 @@ export class PiConversation implements Conversation {
     }
   }
 
+  private personaPaths(): ReadonlySet<string> | undefined {
+    try {
+      return this.d.personaPaths?.();
+    } catch (err) {
+      this.log.warn(`group ${this.d.groupId}: could not list the persona files: ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    }
+  }
+
   /** Re-reads the persona file. A failure keeps the previous text (the agent must not lose its profile over a hiccup). */
   private refreshPersona(): void {
     if (!this.d.persona) return;
@@ -135,14 +142,14 @@ export class PiConversation implements Conversation {
       await this.d.session.prompt(prompt, images?.length ? { images } : undefined);
       added = state.messages.slice(from);
     } catch (err) {
-      this.setTranscript(state.messages.slice(0, from), { resetPruning: false });
+      this.setTranscript(state.messages.slice(0, from));
       this.emit("turn.rollback", { ms: Date.now() - t0, reason: "model call threw", error: err });
       throw err;
     }
     const last = added.findLast((m) => m.role === "assistant");
     if (!last || last.role !== "assistant" || last.stopReason === "error" || last.stopReason === "aborted") {
       // A failed turn leaves no trace: not in memory, not in the database.
-      this.setTranscript(state.messages.slice(0, from), { resetPruning: false });
+      this.setTranscript(state.messages.slice(0, from));
       const reason = last?.role === "assistant" ? (last.errorMessage ?? `model call ${last.stopReason}`) : "no reply from the model";
       this.emit("turn.rollback", { ms: Date.now() - t0, reason: last?.role === "assistant" ? last.stopReason : "no assistant message", error: reason, discarded_messages: added.length });
       throw new Error(reason);
@@ -168,9 +175,8 @@ export class PiConversation implements Conversation {
    * assigning to `state.messages` alone is silently undone (the model would see none of the history, or a rolled-back turn).
    * The SessionManager is in-memory; our own persistence is the database.
    */
-  private setTranscript(messages: AgentMessage[], opts: { resetPruning: boolean }): void {
+  private setTranscript(messages: AgentMessage[]): void {
     const { session } = this.d;
-    if (opts.resetPruning) this.pruneState.through = 0; // indices shift (restore, compaction); a rollback only truncates, so the watermark stays valid
     session.sessionManager.newSession();
     for (const m of messages) session.sessionManager.appendMessage(m as never);
     session.agent.state.messages = session.sessionManager.buildSessionProjection().messages;
@@ -194,18 +200,18 @@ export class PiConversation implements Conversation {
     this.seqs = messages.map((m) => m.seq);
     this.flushed = this.d.store.loadFlushed(this.d.groupId);
     if (restored.length > 0) {
-      this.setTranscript(restored, { resetPruning: true });
+      this.setTranscript(restored);
       this.log.info(`group ${this.d.groupId}: restored ${messages.length} message(s)${archive ? " + archive" : ""}`);
     }
   }
 
-  /** Level 1: applied to the view sent to the model, so the stored history stays complete. */
-  private installPruning(): void {
+  /** The agent's profile is part of the view sent to the model, in front of everything (the archive included); it is not stored history. */
+  private installPersonaPin(): void {
     const agent = this.d.session.agent;
     const previous = agent.transformContext;
     agent.transformContext = async (messages, signal) => {
-      const view = pruneExpensive(previous ? await previous(messages, signal) : messages, this.pruneOptions, this.pruneState);
-      return this.pinned ? [this.pinned, ...view] : view; // before everything, the archive included: the prefix only changes when the file does
+      const view = previous ? await previous(messages, signal) : messages;
+      return this.pinned ? [this.pinned, ...view] : view; // the prefix only changes when the file does
     };
   }
 
@@ -247,9 +253,8 @@ export class PiConversation implements Conversation {
   /** `imageTokens`: what the pictures attached to the prompt will cost. */
   private contextTokens(prompt: string, imageTokens = 0): number {
     const { session } = this.d;
-    const view = pruneExpensive(session.agent.state.messages, this.pruneOptions, this.pruneState, false);
     const pin = this.pinned ? estimateMessageTokens(this.pinned) : 0;
-    return estimateContextTokens(session.systemPrompt, view) + pin + estimateTextTokens(prompt) + imageTokens;
+    return estimateContextTokens(session.systemPrompt, session.agent.state.messages) + pin + estimateTextTokens(prompt) + imageTokens;
   }
 
   /** Size of the context the next request would carry (the estimate the compaction thresholds use). */
@@ -257,12 +262,7 @@ export class PiConversation implements Conversation {
     return this.contextTokens("");
   }
 
-  private get pruneOptions() {
-    const { recentTokens, pruneMinTokens, pruneBatchBlocks } = this.d.context;
-    return { recentTokens, minBlockTokens: pruneMinTokens, batchBlocks: pruneBatchBlocks };
-  }
-
-  /** Level 2: snap-compact older history once the (pruned) context passes the threshold. */
+  /** Snap-compact older history once the context passes the threshold. */
   private async compactIfNeeded(prompt: string, imageTokens = 0): Promise<void> {
     const { session, context: c, groupId } = this.d;
     const state = session.agent.state;
@@ -278,11 +278,11 @@ export class PiConversation implements Conversation {
       return;
     }
     const t0 = Date.now();
-    const source = extendArchiveSource(this.archiveSource, serializeForArchive(messages.slice(offset, cut)), this.budget);
+    const source = extendArchiveSource(this.archiveSource, serializeForArchive(messages.slice(offset, cut), { personaPaths: this.personaPaths() }), this.budget);
     const archive = await buildArchiveMessage(source, this.budget);
 
     const throughSeq = this.seqs[cut - offset - 1]!;
-    this.setTranscript([archive, ...messages.slice(cut)], { resetPruning: true });
+    this.setTranscript([archive, ...messages.slice(cut)]);
     this.seqs = this.seqs.slice(cut - offset);
     this.archiveSource = source;
     this.archived = true;
