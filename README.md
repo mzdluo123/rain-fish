@@ -16,6 +16,6 @@ Credentials/model come from Pi's usual config (`~/.pi/agent`, or provider env va
 - Sessions are in-memory only.
 
 ## System context
-`<sandbox>/agent.md` (default `workspace/agent.md`) is the agent's system prompt, read at startup; startup fails if it is missing. Non-overridable rules (no code execution, sandbox-only) are appended in code, so editing `agent.md` cannot remove them. Note the agent can edit `agent.md` itself via `write`/`edit`; the change takes effect on the next session.
+`<sandbox>/agent.md` (default `workspace/agent.md`) is passed to Pi as the system prompt; startup fails if it is missing. No prompt text is hard-coded. The agent can edit `agent.md` via `write`/`edit` (effective next session); code-execution is blocked by the tool allowlist, not by the prompt.
 
-`<sandbox>/persona.md` is optional: the agent's own evolving self-profile (catchphrases, group lore, preferences). The agent maintains it via `write`/`edit`; if present it is appended to the system prompt on the next session start.
+`<sandbox>/persona.md` is optional: the agent's own evolving self-profile. `agent.md` instructs it to `read` the file at the start of a conversation and update it as it learns.

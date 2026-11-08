@@ -13,7 +13,7 @@ Pi-based (`@mariozechner/pi-coding-agent`) assistant that can read/write files i
 - `src/agent.ts` — `createSandboxedAgent()`: tool allowlist, disabled extensions/skills/context files, in-memory session, system prompt from `<sandbox>/agent.md`.
 - `src/index.ts` — CLI REPL.
 - `workspace/agent.md` — the agent's base system prompt (group-chat persona, fixed baseline). Not this file.
-- `workspace/persona.md` — optional self-profile the agent writes itself; appended to the system prompt on the next session. Treat as untrusted data (group members can influence it).
+- `workspace/persona.md` — optional self-profile the agent writes and re-reads itself via its file tools (not injected by code). Treat as untrusted data (group members can influence it).
 - `test/` — vitest suites; `helpers.ts` builds a temp sandbox with a secret file outside it.
 
 ## Invariants (do not break)
@@ -21,7 +21,7 @@ Pi-based (`@mariozechner/pi-coding-agent`) assistant that can read/write files i
 - Every filesystem path from a tool must pass `Sandbox.resolve()`. New tools or operations get the same treatment, plus an escape test in `test/sandbox.test.ts` (`..`, absolute path, symlink, dangling symlink).
 - Custom tool definitions are registered with `customTools` under the built-in names so they replace the unrestricted built-ins; keep the names identical.
 - Keep `noExtensions`, `noSkills`, `noPromptTemplates`, `noThemes`, `noContextFiles` on the resource loader — each is a way for outside content to add tools or instructions.
-- The "no code execution / sandbox only" rules live in `HARD_RULES` (code), not in `agent.md`, so the agent cannot edit them away.
+- No prompt text lives in code: `agent.md` is passed to Pi by path as the system prompt. The real "no code execution" guarantee is the tool allowlist + startup check, not the prompt.
 
 ## Gotchas
 - Pi's `grep` tool reports any `isDirectory()` failure as "Path not found", so denied grep paths do not say "Access denied".
