@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
-import { formatPrompt, PiResponder, sampleExponential, type PiResponderOptions } from "../src/responder.js";
+import { formatBatch, formatPrompt, PiResponder, sampleExponential, type PiResponderOptions } from "../src/responder.js";
 import type { Conversation, GroupMessage } from "../src/types.js";
 import { openDb } from "../src/db/open.js";
 import { PendingStore } from "../src/pending-store.js";
@@ -31,7 +31,7 @@ function fakeConversation(log: string[], o: { hold?: boolean; fail?: string } = 
   const release: (() => void)[] = [];
   const conversation: Conversation = {
     async ask(prompt) {
-      log.push(`start ${prompt.split("\n").filter((l) => l && !l.startsWith("<")).join("|")}`);
+      log.push(`start ${prompt.replace(/<system>[\s\S]*?<\/system>\n*/, "").split("\n").filter((l) => l && !l.startsWith("<")).join("|")}`);
       if (o.hold) {
         const { promise, resolve } = Promise.withResolvers<void>();
         release.push(resolve);
@@ -82,6 +82,16 @@ describe("sampleExponential", () => {
     const xs = Array.from({ length: n }, (_, i) => sampleExponential(500, () => (i + 0.5) / n));
     expect(xs.reduce((a, b) => a + b, 0) / n).toBeCloseTo(500, -1);
     expect(xs.filter((x) => x > 500).length / n).toBeCloseTo(1 / Math.E, 3);
+  });
+});
+
+describe("formatBatch", () => {
+  it("starts with a system notice naming the bot's own account, then the messages", () => {
+    const text = formatBatch([{ msg: { ...msg("100", "你好", "1"), selfId: "2165509679" }, addressed: false }, { msg: msg("100", "@2165509679 在吗", "2"), addressed: true }]);
+    expect(text).toMatch(/^<system>\n你的 QQ 账号是 2165509679。/);
+    expect(text).toContain("@2165509679 才是在叫你");
+    expect(text.indexOf("</system>")).toBeLessThan(text.indexOf("<message "));
+    expect(text.match(/<message /g)).toHaveLength(2);
   });
 });
 

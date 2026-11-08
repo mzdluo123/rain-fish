@@ -2,6 +2,7 @@ import { noopLogger } from "./logger.js";
 import type { Conversation, ConversationFactory, GroupMessage, GroupResponder, EventLog, Logger, PendingMessage, WakeConfig } from "./types.js";
 import type { PendingStore } from "./pending-store.js";
 import { noopEventLog } from "./trace/event-log.js";
+import { identityNotice } from "./context/identity.js";
 import { element } from "./xml.js";
 
 /**
@@ -12,6 +13,11 @@ import { element } from "./xml.js";
 export function formatPrompt(msg: GroupMessage, addressed = false): string {
   const time = new Date(msg.ts * 1000).toLocaleString("sv-SE");
   return element("message", { time, id: msg.messageId, sender: msg.nickname, user_id: msg.userId, addressed: addressed ? "true" : undefined }, msg.text);
+}
+
+/** The user turn for a batch: who the agent is on the platform, then one `<message>` per queued message. */
+export function formatBatch(batch: PendingMessage[]): string {
+  return [identityNotice(batch[0]!.msg.selfId), ...batch.map((p) => formatPrompt(p.msg, p.addressed))].join("\n\n");
 }
 
 /** Waiting time of a Poisson process with the given mean: exponentially distributed (inverse-CDF sampling). */
@@ -157,7 +163,7 @@ export class PiResponder implements GroupResponder {
         this.conversations.set(groupId, conversation);
         conversation.catch(() => this.conversations.delete(groupId)); // retry creation next time
       }
-      await (await conversation).ask(batch.map((p) => formatPrompt(p.msg, p.addressed)).join("\n\n"), { run, addressed: batch.some((p) => p.addressed) });
+      await (await conversation).ask(formatBatch(batch), { run, addressed: batch.some((p) => p.addressed) });
     } catch (err) {
       error = err;
       this.log.error(`agent run failed in group ${groupId}, dropped ${batch.length} message(s): ${err instanceof Error ? err.message : String(err)}`);
