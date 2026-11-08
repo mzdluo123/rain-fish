@@ -18,13 +18,24 @@ function fakeSession(opts: { vision?: boolean; script?: Script } = {}) {
   const session = {
     state,
     toolsPerPrompt,
+    sessionManager: {
+      entries: [] as AgentMessage[],
+      newSession() { this.entries = []; return undefined; },
+      appendMessage(m: AgentMessage) { this.entries.push(m); return String(this.entries.length); },
+      buildSessionProjection() { return { messages: [...this.entries] }; },
+    },
     agent: { state, transformContext: undefined as ((m: AgentMessage[], s?: AbortSignal) => Promise<AgentMessage[]>) | undefined },
     model: { api: "openai-responses", id: "gpt-5.5", provider: "openai", input: opts.vision === false ? ["text"] : ["text", "image"] },
     systemPrompt: "",
     async prompt(text: string) {
       toolsPerPrompt.push([...active]);
+      // Like Pi 1.x: the request is built from the SessionManager's transcript, not from whatever was assigned to state.messages.
+      state.messages = [...session.sessionManager.entries];
+      session.promptSaw.push(state.messages.length);
       state.messages = [...state.messages, { role: "user", content: text, timestamp: Date.now() }, ...(opts.script ?? (() => [assistantText("好的")]))(text, ++turn)];
+      session.sessionManager.entries = [...state.messages];
     },
+    promptSaw: [] as number[],
     listeners: [] as ((e: unknown) => void)[],
     subscribe(l: (e: unknown) => void) {
       session.listeners.push(l);
@@ -64,7 +75,21 @@ describe("persistence", () => {
     const b = await setup({ db: a.db });
     expect(roles(b.session)).toEqual(["user", "assistant"]);
     await b.conv.ask("再来");
+    expect(b.session.promptSaw).toEqual([2]); // the restored history is what the model is given
     expect(b.store.load("g1").messages.map((m) => m.seq)).toEqual([1, 2, 3, 4]);
+  });
+
+  it("does not replay stored system messages (Pi derives the prompt and tool declarations itself)", async () => {
+    const sys = { role: "system", content: "", timestamp: 1 } as unknown as AgentMessage;
+    const a = await setup({ script: () => [sys, assistantText("好的")] });
+    await a.conv.ask("你好");
+    expect(roles(a.session)).toEqual(["user", "system", "assistant"]);
+
+    const b = await setup({ db: a.db, script: () => [assistantText("再见")] });
+    expect(roles(b.session)).toEqual(["user", "assistant"]);
+    await b.conv.ask("再来");
+    expect(roles(b.session)).toEqual(["user", "assistant", "user", "assistant"]);
+    expect(b.store.load("g1").messages.map((m) => m.seq)).toEqual([1, 2, 3, 4, 5]);
   });
 
   it("keeps groups apart", async () => {

@@ -98,14 +98,14 @@ export class PiConversation implements Conversation {
       await this.d.session.prompt(prompt);
       added = state.messages.slice(from);
     } catch (err) {
-      state.messages = state.messages.slice(0, from);
+      this.setTranscript(state.messages.slice(0, from));
       this.emit("turn.rollback", { ms: Date.now() - t0, reason: "model call threw", error: err });
       throw err;
     }
     const last = added.findLast((m) => m.role === "assistant");
     if (!last || last.role !== "assistant" || last.stopReason === "error" || last.stopReason === "aborted") {
       // A failed turn leaves no trace: not in memory, not in the database.
-      state.messages = state.messages.slice(0, from);
+      this.setTranscript(state.messages.slice(0, from));
       const reason = last?.role === "assistant" ? (last.errorMessage ?? `model call ${last.stopReason}`) : "no reply from the model";
       this.emit("turn.rollback", { ms: Date.now() - t0, reason: last?.role === "assistant" ? last.stopReason : "no assistant message", error: reason, discarded_messages: added.length });
       throw new Error(reason);
@@ -126,12 +126,27 @@ export class PiConversation implements Conversation {
     return { text, sent };
   }
 
+  /**
+   * Replaces the live transcript. Pi 1.x rebuilds `agent.state.messages` from its SessionManager before every request, so
+   * assigning to `state.messages` alone is silently undone (the model would see none of the history, or a rolled-back turn).
+   * The SessionManager is in-memory; our own persistence is the database.
+   */
+  private setTranscript(messages: AgentMessage[]): void {
+    const { session } = this.d;
+    session.sessionManager.newSession();
+    for (const m of messages) session.sessionManager.appendMessage(m as never);
+    session.agent.state.messages = session.sessionManager.buildSessionProjection().messages;
+  }
+
   private get budget(): ArchiveBudget {
     return { model: this.d.session.model, archiveTokens: this.d.context.archiveTokens };
   }
 
   private async restore(): Promise<void> {
-    const { archive, messages } = this.d.store.load(this.d.groupId);
+    const { archive, messages: stored } = this.d.store.load(this.d.groupId);
+    // Pi 1.x keeps the system prompt and tool declarations as `system` messages in the transcript and re-derives them for
+    // every request. Replaying stored ones replaces the current prompt/tools (the request then goes out without them).
+    const messages = stored.filter((m) => m.message.role !== "system");
     const restored: AgentMessage[] = [];
     if (archive) {
       this.archiveSource = archive.sourceText;
@@ -142,7 +157,7 @@ export class PiConversation implements Conversation {
     this.seqs = messages.map((m) => m.seq);
     this.flushed = this.d.store.loadFlushed(this.d.groupId);
     if (restored.length > 0) {
-      this.d.session.agent.state.messages = restored;
+      this.setTranscript(restored);
       this.log.info(`group ${this.d.groupId}: restored ${messages.length} message(s)${archive ? " + archive" : ""}`);
     }
   }
@@ -217,7 +232,7 @@ export class PiConversation implements Conversation {
     const archive = await buildArchiveMessage(source, this.budget);
 
     const throughSeq = this.seqs[cut - offset - 1]!;
-    state.messages = [archive, ...messages.slice(cut)];
+    this.setTranscript([archive, ...messages.slice(cut)]);
     this.seqs = this.seqs.slice(cut - offset);
     this.archiveSource = source;
     this.archived = true;
