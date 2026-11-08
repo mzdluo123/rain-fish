@@ -54,14 +54,49 @@ export class WakeIntensity {
   }
 }
 
-/**
- * How strongly one message excites the chat, relative to an ordinary message (1). Smaller = the bot should come sooner:
- * a question or a message to the bot is waiting for an answer. Larger = more is clearly coming: the sentence is unfinished
- * (ends in a comma, colon or ellipsis) or announces a list ("首先", "第一点"). The text is only inspected, never forwarded.
- */
-export function messageWeight(text: string, addressed: boolean): number {
-  const t = text.trim();
-  const unfinished = /[，、：,:…]$|\.{3}$|^(首先|第一[点步条]?|其一|先说)/.test(t);
-  const asking = addressed || /[?？]$/.test(t);
-  return (unfinished ? 2.5 : 1) * (asking ? 0.5 : 1);
+/** One row of the weight table. `weight` multiplies the weight of a message the row applies to; below 1 = the bot comes sooner, above 1 = later. */
+interface WeightRule {
+  name: string;
+  weight: number;
+  applies: (text: string, addressed: boolean) => boolean;
 }
+
+const has = (words: readonly string[], text: string) => words.some((w) => text.includes(w));
+/** The text is only a placeholder like "[图片]" / "[表情]": nothing a member wrote. */
+const placeholderOnly = /^(\[[^\]]{1,6}\])+$/;
+
+/**
+ * The keyword/heat table. Matching is plain substring/prefix/suffix tests on the lower-cased text (never a regex built from
+ * data), all rows that apply are multiplied, and the product is clamped to [MIN_WEIGHT, MAX_WEIGHT]. Edit the table here;
+ * it is host code, so neither group members nor the agent can change it.
+ */
+export const WEIGHT_RULES: readonly WeightRule[] = [
+  // --- waiting for an answer: come sooner ---
+  { name: "addressed", weight: 0.5, applies: (_t, addressed) => addressed }, // @-mention or reply to the bot
+  { name: "question", weight: 0.5, applies: (t) => /[?？]$/.test(t) },
+  { name: "calls_bot", weight: 0.5, applies: (t) => has(["bot", "机器人"], t) }, // talks to it without an @
+  { name: "asks_help", weight: 0.6, applies: (t) => has(["帮我", "怎么", "为什么", "能不能"], t) },
+  // --- the conversation is closing or empty: no reason to wait ---
+  { name: "closing", weight: 0.8, applies: (t) => t.length <= 8 && has(["好的", "谢谢", "晚安", "哈哈"], t) },
+  { name: "placeholder_only", weight: 0.3, applies: (t) => placeholderOnly.test(t) }, // a lone picture or sticker
+  // --- more is coming: wait ---
+  { name: "unfinished", weight: 2.5, applies: (t) => /[，、：,:…]$|\.{3}$/.test(t) || /^(首先|第一[点步条]?|其一|先说)/.test(t) },
+  { name: "heated", weight: 1.5, applies: (t) => has(["不对", "胡说", "你才"], t) }, // an argument: do not butt in
+  { name: "keep_quiet", weight: 3, applies: (t) => has(["别说话", "闭嘴"], t) }, // told to be quiet: hold off
+];
+
+export const MIN_WEIGHT = 0.2;
+export const MAX_WEIGHT = 4;
+
+/**
+ * How strongly one message excites the chat relative to an ordinary message (1), from `WEIGHT_RULES`; `rules` names the rows
+ * that applied. The text is only inspected, never forwarded or logged.
+ */
+export function weighMessage(text: string, addressed: boolean): { weight: number; rules: string[] } {
+  const t = text.trim().toLowerCase();
+  const hit = WEIGHT_RULES.filter((r) => r.applies(t, addressed));
+  const product = hit.reduce((w, r) => w * r.weight, 1);
+  return { weight: Math.min(MAX_WEIGHT, Math.max(MIN_WEIGHT, product)), rules: hit.map((r) => r.name) };
+}
+
+export const messageWeight = (text: string, addressed: boolean): number => weighMessage(text, addressed).weight;

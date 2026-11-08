@@ -1,6 +1,6 @@
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { noopLogger } from "./logger.js";
-import { messageWeight, WakeIntensity } from "./wake-intensity.js";
+import { weighMessage, WakeIntensity } from "./wake-intensity.js";
 import type { Conversation, ConversationFactory, GroupMessage, GroupResponder, EventLog, ImageSource, Logger, PendingMessage, PictureArchive, StoredPicture, WakeConfig } from "./types.js";
 import { imageRef } from "./image-store.js";
 import type { PendingStore } from "./pending-store.js";
@@ -181,7 +181,11 @@ export class PiResponder implements GroupResponder {
     group.waitingSince ??= now;
     if (p.addressed) group.addressedSince ??= now;
     // A restored message was heard before the restart: it starts a clock but adds no excitation.
-    if (origin === "live") group.intensity.add(now, messageWeight(p.msg.text, p.addressed));
+    if (origin === "live") {
+      const { weight, rules } = weighMessage(p.msg.text, p.addressed);
+      group.intensity.add(now, weight);
+      group.events.emit("wake.weight", { message_id: p.msg.messageId, weight, rules });
+    }
     this.schedule(groupId, group, now);
   }
 

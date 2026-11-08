@@ -304,7 +304,7 @@ describe("PiResponder wake-ups", () => {
     const plain = await dueAfter("今天天气不错", false);
     expect(plain).toBe(3_010);
     expect(await dueAfter("今天天气不错吗？", false)).toBeLessThan(plain);
-    expect(await dueAfter("今天天气不错", true)).toBe(await dueAfter("这个怎么办？", false));
+    expect(await dueAfter("今天天气不错", true)).toBe(await dueAfter("这个行吗？", false));
     expect(await dueAfter("首先，", false)).toBeGreaterThan(plain);
   });
 
