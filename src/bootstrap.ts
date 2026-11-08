@@ -5,6 +5,15 @@ import { createEventLog } from "./trace/event-log.js";
 import type { Config, EventLog, Logger } from "./types.js";
 
 /**
+ * Prompt-cache lifetime: Pi reads `PI_CACHE_RETENTION` ("long" = 1 hour on providers that support it, otherwise the short default)
+ * when it builds every request, so setting it once at startup covers all sessions. `CACHE_RETENTION` in `.env` is the setting; it wins over a
+ * `PI_CACHE_RETENTION` already in the environment.
+ */
+export function applyCacheRetention(retention: Config["cacheRetention"], env: Record<string, string | undefined> = process.env): void {
+  env.PI_CACHE_RETENTION = retention;
+}
+
+/**
  * Shared startup for every entry point: reads `.env` (Bun loads it automatically) and the process
  * environment, validates it, and builds the logger and the structured event log (`TRACE_*`).
  * Invalid configuration prints a readable error and exits.
@@ -12,6 +21,7 @@ import type { Config, EventLog, Logger } from "./types.js";
 export function bootstrap(): { config: Config; logger: Logger; events: EventLog } {
   try {
     const config = loadConfig();
+    applyCacheRetention(config.cacheRetention);
     const logger = createLogger(config.logLevel);
     return { config, logger, events: createEventLog(config.trace, logger) };
   } catch (err) {

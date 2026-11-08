@@ -3,7 +3,7 @@ import { loadConfig } from "../src/config.js";
 
 describe("loadConfig", () => {
   it("has working defaults", () => {
-    expect(loadConfig({})).toEqual({ wsUrl: "ws://127.0.0.1:3001", token: undefined, groups: undefined, promptFile: "prompts/agent.md", dbPath: "data/bot.db", logLevel: "info", model: undefined, thinkingLevel: undefined, context: { recentTokens: 12_000, compactTokens: 60_000, archiveTokens: 20_000, flushRatio: 0.85 }, speakEveryRuns: 5, wake: { chatMeanMs: 20_000, addressedMeanMs: 1_000, decayPerSec: 0.4, quietThreshold: 0.3, maxWaitMs: 120_000, addressedMaxWaitMs: 20_000, maxBatch: 30 }, images: { maxBytes: 3 * 1024 * 1024, maxPerRun: 4, storeMaxBytes: 200 * 1024 * 1024, modelMaxPixels: 800_000, modelMaxEdge: 1568, detailMaxPixels: 1_150_000 }, send: { maxPerRun: 6, gapMs: 800 }, backfill: { minMessages: 100, maxAgeSeconds: 5 * 86_400 }, trace: { enabled: true, dir: "data/logs", maxFileBytes: 20 * 1024 * 1024, maxFiles: 30, maxAgeDays: 14, compress: true, content: false } });
+    expect(loadConfig({})).toEqual({ wsUrl: "ws://127.0.0.1:3001", token: undefined, groups: undefined, promptFile: "prompts/agent.md", dbPath: "data/bot.db", logLevel: "info", model: undefined, thinkingLevel: undefined, cacheRetention: "long", context: { recentTokens: 12_000, compactTokens: 60_000, archiveTokens: 20_000, flushRatio: 0.85 }, speakEveryRuns: 5, wake: { chatMeanMs: 20_000, addressedMeanMs: 1_000, decayPerSec: 0.4, quietThreshold: 0.3, maxWaitMs: 120_000, addressedMaxWaitMs: 20_000, maxBatch: 30 }, images: { maxBytes: 3 * 1024 * 1024, maxPerRun: 4, storeMaxBytes: 200 * 1024 * 1024, modelMaxPixels: 800_000, modelMaxEdge: 1568, detailMaxPixels: 1_150_000 }, send: { maxPerRun: 6, gapMs: 800 }, backfill: { minMessages: 100, maxAgeSeconds: 5 * 86_400 }, trace: { enabled: true, dir: "data/logs", maxFileBytes: 20 * 1024 * 1024, maxFiles: 30, maxAgeDays: 14, compress: true, content: false } });
   });
 
   it("treats empty values (KEY= in .env) as unset, so defaults apply", () => {
@@ -42,6 +42,23 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ CONTEXT_RECENT_TOKENS: "-5" })).toThrow(/CONTEXT_RECENT_TOKENS/);
     // recent + archive must fit under the compaction threshold, or compaction could never get below it
     expect(() => loadConfig({ CONTEXT_COMPACT_TOKENS: "30000" })).toThrow(/CONTEXT_COMPACT_TOKENS.*larger than/);
+  });
+});
+
+describe("prompt cache retention", () => {
+  it("defaults to 1 hour (long), can be set back to short, and rejects anything else", () => {
+    expect(loadConfig({}).cacheRetention).toBe("long");
+    expect(loadConfig({ CACHE_RETENTION: "short" }).cacheRetention).toBe("short");
+    expect(() => loadConfig({ CACHE_RETENTION: "forever" })).toThrow(/CACHE_RETENTION/);
+  });
+
+  it("is handed to Pi through PI_CACHE_RETENTION, overriding a value already in the environment", async () => {
+    const { applyCacheRetention } = await import("../src/bootstrap.js");
+    const env: Record<string, string | undefined> = { PI_CACHE_RETENTION: "short" };
+    applyCacheRetention("long", env);
+    expect(env.PI_CACHE_RETENTION).toBe("long");
+    applyCacheRetention("short", env);
+    expect(env.PI_CACHE_RETENTION).toBe("short");
   });
 });
 

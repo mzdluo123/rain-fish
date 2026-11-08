@@ -40,6 +40,8 @@ export const configSchema = z
       .optional(),
     /** Thinking effort: `off` disables thinking. Unset: Pi's default (medium, clamped to what the model supports). */
     THINKING_LEVEL: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).optional(),
+    /** How long the provider keeps the cached prompt prefix: "long" = 1 hour (Anthropic), "short" = the provider's default (5 minutes). Sets Pi's PI_CACHE_RETENTION. */
+    CACHE_RETENTION: z.enum(["short", "long"]).default("long"),
     // --- context management (tokens) ---
     /** Newest history that compaction keeps verbatim (it only retires what is older, cutting at a turn start). */
     CONTEXT_RECENT_TOKENS: z.coerce.number().int().positive().default(12_000),
@@ -113,6 +115,7 @@ export const configSchema = z
     logLevel: e.LOG_LEVEL,
     model: e.MODEL,
     thinkingLevel: e.THINKING_LEVEL,
+    cacheRetention: e.CACHE_RETENTION,
     context: {
       recentTokens: e.CONTEXT_RECENT_TOKENS,
       compactTokens: e.CONTEXT_COMPACT_TOKENS,
