@@ -3,7 +3,7 @@ import { loadConfig } from "../src/config.js";
 
 describe("loadConfig", () => {
   it("has working defaults", () => {
-    expect(loadConfig({})).toEqual({ wsUrl: "ws://127.0.0.1:3001", token: undefined, groups: undefined, promptFile: "prompts/agent.md", dbPath: "data/bot.db", logLevel: "info", model: undefined, thinkingLevel: undefined, context: { recentTokens: 12_000, compactTokens: 60_000, archiveTokens: 20_000, flushRatio: 0.85 }, speakEveryRuns: 5, wake: { chatMeanMs: 30_000, addressedMeanMs: 2_000 }, images: { maxBytes: 3 * 1024 * 1024, maxPerRun: 4, storeMaxBytes: 200 * 1024 * 1024, modelMaxPixels: 800_000, modelMaxEdge: 1568, detailMaxPixels: 1_150_000 }, send: { maxPerRun: 6, gapMs: 800 }, backfill: { minMessages: 100, maxAgeSeconds: 5 * 86_400 }, trace: { enabled: true, dir: "data/logs", maxFileBytes: 20 * 1024 * 1024, maxFiles: 30, maxAgeDays: 14, compress: true, content: false } });
+    expect(loadConfig({})).toEqual({ wsUrl: "ws://127.0.0.1:3001", token: undefined, groups: undefined, promptFile: "prompts/agent.md", dbPath: "data/bot.db", logLevel: "info", model: undefined, thinkingLevel: undefined, context: { recentTokens: 12_000, compactTokens: 60_000, archiveTokens: 20_000, flushRatio: 0.85 }, speakEveryRuns: 5, wake: { chatMeanMs: 20_000, addressedMeanMs: 1_000, decayPerSec: 0.4, quietThreshold: 0.3, maxWaitMs: 120_000, addressedMaxWaitMs: 20_000, maxBatch: 30 }, images: { maxBytes: 3 * 1024 * 1024, maxPerRun: 4, storeMaxBytes: 200 * 1024 * 1024, modelMaxPixels: 800_000, modelMaxEdge: 1568, detailMaxPixels: 1_150_000 }, send: { maxPerRun: 6, gapMs: 800 }, backfill: { minMessages: 100, maxAgeSeconds: 5 * 86_400 }, trace: { enabled: true, dir: "data/logs", maxFileBytes: 20 * 1024 * 1024, maxFiles: 30, maxAgeDays: 14, compress: true, content: false } });
   });
 
   it("treats empty values (KEY= in .env) as unset, so defaults apply", () => {
@@ -46,14 +46,18 @@ describe("loadConfig", () => {
 });
 
 describe("wake-up settings", () => {
-  it("default to 30s for chatter and 2s once addressed, and are read in seconds", () => {
-    expect(loadConfig({}).wake).toEqual({ chatMeanMs: 30_000, addressedMeanMs: 2_000 });
-    expect(loadConfig({ WAKE_CHAT_MEAN_SECONDS: "1.5", WAKE_ADDRESSED_MEAN_SECONDS: "0" }).wake).toEqual({ chatMeanMs: 1_500, addressedMeanMs: 0 });
+  it("default to a 20s reaction time for chatter and 1s once addressed on top of the Hawkes quiet time, and are read in seconds", () => {
+    expect(loadConfig({ WAKE_CHAT_MEAN_SECONDS: "1.5", WAKE_ADDRESSED_MEAN_SECONDS: "0" }).wake).toMatchObject({ chatMeanMs: 1_500, addressedMeanMs: 0 });
+    expect(loadConfig({}).wake).toEqual({ chatMeanMs: 20_000, addressedMeanMs: 1_000, decayPerSec: 0.4, quietThreshold: 0.3, maxWaitMs: 120_000, addressedMaxWaitMs: 20_000, maxBatch: 30 });
+    expect(loadConfig({ WAKE_DECAY_PER_SECOND: "1", WAKE_QUIET_THRESHOLD: "0.5", WAKE_MAX_WAIT_SECONDS: "60", WAKE_ADDRESSED_MAX_WAIT_SECONDS: "10", WAKE_MAX_BATCH: "5" }).wake)
+      .toMatchObject({ decayPerSec: 1, quietThreshold: 0.5, maxWaitMs: 60_000, addressedMaxWaitMs: 10_000, maxBatch: 5 });
   });
 
   it("rejects negative or non-numeric values", () => {
     expect(() => loadConfig({ WAKE_CHAT_MEAN_SECONDS: "-1" })).toThrow(/WAKE_CHAT_MEAN_SECONDS/);
     expect(() => loadConfig({ WAKE_ADDRESSED_MEAN_SECONDS: "soon" })).toThrow(/WAKE_ADDRESSED_MEAN_SECONDS/);
+    expect(() => loadConfig({ WAKE_DECAY_PER_SECOND: "0" })).toThrow(/WAKE_DECAY_PER_SECOND/);
+    expect(() => loadConfig({ WAKE_MAX_BATCH: "0" })).toThrow(/WAKE_MAX_BATCH/);
   });
 });
 

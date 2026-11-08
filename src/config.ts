@@ -50,10 +50,21 @@ export const configSchema = z
     /** Memory flush: once the context passes this fraction of COMPACT, the agent is asked to save what matters to its files first. */
     CONTEXT_FLUSH_RATIO: z.coerce.number().gt(0).lt(1).default(0.85),
     // --- wake-ups ---
-    /** Mean seconds between agent wake-ups of a group while ordinary chatter is pending (Poisson process: exponential gaps). */
-    WAKE_CHAT_MEAN_SECONDS: z.coerce.number().nonnegative().default(30),
-    /** Same, once a pending message @-mentions the bot or replies to it. 0 = wake at the next tick. */
-    WAKE_ADDRESSED_MEAN_SECONDS: z.coerce.number().nonnegative().default(2),
+    // The wake-up comes after the chat has gone quiet (Hawkes excitation, see src/wake-intensity.ts) plus a random "reaction time".
+    /** Mean seconds of the random reaction time (exponential) added after the chat has gone quiet, while only ordinary chatter is pending. */
+    WAKE_CHAT_MEAN_SECONDS: z.coerce.number().nonnegative().default(20),
+    /** Same, once a pending message @-mentions the bot or replies to it. 0 = no extra delay. */
+    WAKE_ADDRESSED_MEAN_SECONDS: z.coerce.number().nonnegative().default(1),
+    /** Hawkes decay rate beta, per second: how fast a burst of messages cools down (0.4 -> half-life ~1.7 s). */
+    WAKE_DECAY_PER_SECOND: z.coerce.number().positive().default(0.4),
+    /** The chat counts as quiet when the excitation is down to this many ordinary messages (smaller = wait longer after a burst). */
+    WAKE_QUIET_THRESHOLD: z.coerce.number().positive().default(0.3),
+    /** Upper bound, from the first pending message, however busy the chat stays. */
+    WAKE_MAX_WAIT_SECONDS: z.coerce.number().positive().default(120),
+    /** Same, measured from the first pending message that is addressed to the bot. */
+    WAKE_ADDRESSED_MAX_WAIT_SECONDS: z.coerce.number().positive().default(20),
+    /** This many pending messages wake the agent at once. */
+    WAKE_MAX_BATCH: z.coerce.number().int().positive().default(30),
     /** Every this many agent runs of a group, the next batch carries a system notice that the agent must say something. 0 = never. */
     SPEAK_EVERY_RUNS: z.coerce.number().int().nonnegative().default(5),
     // --- history backfill ---
@@ -112,6 +123,11 @@ export const configSchema = z
     wake: {
       chatMeanMs: e.WAKE_CHAT_MEAN_SECONDS * 1000,
       addressedMeanMs: e.WAKE_ADDRESSED_MEAN_SECONDS * 1000,
+      decayPerSec: e.WAKE_DECAY_PER_SECOND,
+      quietThreshold: e.WAKE_QUIET_THRESHOLD,
+      maxWaitMs: e.WAKE_MAX_WAIT_SECONDS * 1000,
+      addressedMaxWaitMs: e.WAKE_ADDRESSED_MAX_WAIT_SECONDS * 1000,
+      maxBatch: e.WAKE_MAX_BATCH,
     },
     images: {
       maxBytes: e.IMAGE_MAX_BYTES,

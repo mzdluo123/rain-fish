@@ -1,5 +1,6 @@
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { noopLogger } from "./logger.js";
+import { messageWeight, WakeIntensity } from "./wake-intensity.js";
 import type { Conversation, ConversationFactory, GroupMessage, GroupResponder, EventLog, ImageSource, Logger, PendingMessage, PictureArchive, StoredPicture, WakeConfig } from "./types.js";
 import { imageRef } from "./image-store.js";
 import type { PendingStore } from "./pending-store.js";
@@ -86,8 +87,13 @@ type GroupPhase = "idle" | "waiting" | "running";
 
 interface GroupState {
   pending: PendingMessage[];
-  /** The scheduled wake-up, if any; `addressed` = it was drawn with the short mean. */
-  timer?: { handle: ReturnType<typeof setTimeout>; due: number; addressed: boolean };
+  /** The scheduled wake-up, if any. Every arriving message replaces it (the chat just got hotter). */
+  timer?: { handle: ReturnType<typeof setTimeout>; due: number };
+  /** How hot the chat is (Hawkes excitation); lives across runs, it only depends on when messages arrived. */
+  intensity: WakeIntensity;
+  /** When the oldest / the oldest addressed message of the pending batch was queued: the maximum waits count from here. */
+  waitingSince?: number;
+  addressedSince?: number;
   /** Runs of one group are chained so they never overlap. */
   tail: Promise<void>;
   phase: GroupPhase;
@@ -116,10 +122,12 @@ export interface PiResponderOptions {
 }
 
 /**
- * One agent conversation per group. Messages do not each cost a model call: they queue up, and the
- * agent is woken at the arrival times of a Poisson process (exponential gaps, memoryless), then sees
- * everything queued so far in one prompt. The clock starts with the first pending message; a message
- * addressed to the bot can only pull the wake-up earlier (it adds an independent, faster process).
+ * One agent conversation per group. Messages do not each cost a model call: they queue up, and the agent is woken
+ * once the chat has gone quiet, then sees everything queued so far in one prompt. "Quiet" comes from a Hawkes
+ * process (`WakeIntensity`): each message excites the chat, the excitation fades exponentially, and the wake-up is
+ * due when it has fallen below a threshold, plus a random reaction time (exponential; shorter once a pending message
+ * is addressed to the bot). Every arriving message recomputes the due time (a lively burst keeps pushing it back),
+ * bounded by a maximum wait from the first pending message and by a maximum batch size.
  * Runs of one group never overlap; messages arriving during a run wait for the next wake-up.
  */
 export class PiResponder implements GroupResponder {
@@ -169,23 +177,42 @@ export class PiResponder implements GroupResponder {
     group.pending.push(p);
     group.events.emit("queue.add", { message_id: p.msg.messageId, addressed: p.addressed, origin, queued: group.pending.length });
     if (group.phase === "idle") this.setPhase(group, "waiting", origin === "restored" ? "restored message" : "message arrived");
-    const { timer } = group;
-    if (timer && (timer.addressed || !p.addressed)) return; // an equal or faster clock is already running
+    const now = Date.now();
+    group.waitingSince ??= now;
+    if (p.addressed) group.addressedSince ??= now;
+    // A restored message was heard before the restart: it starts a clock but adds no excitation.
+    if (origin === "live") group.intensity.add(now, messageWeight(p.msg.text, p.addressed));
+    this.schedule(groupId, group, now);
+  }
 
-    const mean = p.addressed ? this.opts.wake.addressedMeanMs : this.opts.wake.chatMeanMs;
-    const due = Date.now() + sampleExponential(mean, this.random);
-    if (timer && timer.due <= due) {
-      timer.addressed = true; // the earlier of the two processes stays; later addressed messages need no new draw
-      return;
-    }
-    if (timer) clearTimeout(timer.handle);
-    group.timer = { handle: setTimeout(() => this.wake(groupId), Math.max(0, due - Date.now())), due, addressed: p.addressed };
-    group.events.emit("wake.scheduled", { in_ms: Math.max(0, Math.round(due - Date.now())), mean_ms: mean, addressed: p.addressed, replaced: timer !== undefined });
+  /** (Re)computes the wake-up of a group: quiet time of the Hawkes process + random reaction time, within the maximum waits. */
+  private schedule(groupId: string, group: GroupState, now: number): void {
+    const w = this.opts.wake;
+    const addressed = group.addressedSince !== undefined;
+    const mean = addressed ? w.addressedMeanMs : w.chatMeanMs;
+    const quiet = group.intensity.quietIn(now);
+    const reaction = sampleExponential(mean, this.random);
+    const deadline = Math.min((group.waitingSince ?? now) + w.maxWaitMs, addressed ? group.addressedSince! + w.addressedMaxWaitMs : Number.POSITIVE_INFINITY);
+    const full = group.pending.length >= w.maxBatch;
+    const delay = full ? 0 : Math.max(0, Math.min(quiet + reaction, deadline - now));
+    const replaced = group.timer !== undefined;
+    if (group.timer) clearTimeout(group.timer.handle);
+    group.timer = { handle: setTimeout(() => this.wake(groupId), delay), due: now + delay };
+    group.events.emit("wake.scheduled", {
+      in_ms: Math.round(delay),
+      mean_ms: mean,
+      addressed,
+      replaced,
+      quiet_ms: Number.isFinite(quiet) ? Math.round(quiet) : null,
+      excitation: Math.round(group.intensity.at(now) * 1000) / 1000,
+      capped: !full && quiet + reaction > deadline - now,
+      full,
+    });
   }
 
   private group(groupId: string): GroupState {
     let g = this.groups.get(groupId);
-    if (!g) this.groups.set(groupId, (g = { pending: [], tail: Promise.resolve(), phase: "idle", runsSinceSpeakNotice: this.loadSpeakCount(groupId), events: this.events.child({ group: groupId }) }));
+    if (!g) this.groups.set(groupId, (g = { pending: [], tail: Promise.resolve(), phase: "idle", runsSinceSpeakNotice: this.loadSpeakCount(groupId), intensity: new WakeIntensity({ decayPerSec: this.opts.wake.decayPerSec, threshold: this.opts.wake.quietThreshold }), events: this.events.child({ group: groupId }) }));
     return g;
   }
 
@@ -218,6 +245,7 @@ export class PiResponder implements GroupResponder {
    */
   private async run(groupId: string, group: GroupState): Promise<void> {
     const batch = group.pending.splice(0);
+    group.waitingSince = group.addressedSince = undefined; // the maximum waits count from the next batch's first message
     if (batch.length === 0) return;
     const run = `r${Date.now().toString(36)}.${++this.runCount}`;
     const t0 = Date.now();
