@@ -1,9 +1,10 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { ImageContent } from "@earendil-works/pi-ai";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
-import { buildArchiveMessage, extendArchiveSource, serializeForArchive, type ArchiveBudget } from "./context/archive.js";
-import { estimateContextTokens, estimateMessageTokens, estimateTextTokens } from "./context/estimate.js";
+import { buildArchiveMessage, canReadImages, extendArchiveSource, serializeForArchive, type ArchiveBudget } from "./context/archive.js";
+import { estimateContextTokens, estimateMessageTokens, estimateTextTokens, IMAGE_TOKENS } from "./context/estimate.js";
 import { MEMORY_FLUSH_PROMPT } from "./context/memory.js";
-import { SEND_NUDGE_PROMPT } from "./context/nudge.js";
+import { SEND_NUDGE_PROMPT, SPEAK_NUDGE_PROMPT } from "./context/nudge.js";
 import { pruneExpensive, type PruneState } from "./context/prune.js";
 import type { ConversationStore } from "./conversation-store.js";
 import { noopLogger } from "./logger.js";
@@ -61,19 +62,26 @@ export class PiConversation implements Conversation {
     return this.d.session;
   }
 
-  async ask(prompt: string, ctx: { run?: string; addressed?: boolean } = {}): Promise<string> {
+  /** Whether the session's model reads images; the responder only fetches pictures if so. */
+  get acceptsImages(): boolean {
+    return canReadImages(this.d.session.model);
+  }
+
+  async ask(prompt: string, ctx: { run?: string; addressed?: boolean; mustSpeak?: boolean; images?: ImageContent[] } = {}): Promise<string> {
     this.cur = { run: ctx.run };
+    const images = this.acceptsImages ? ctx.images : undefined; // a text-only model would reject the request
     try {
-      await this.flushMemoryIfNeeded(prompt);
-      await this.compactIfNeeded(prompt);
-      const first = await this.runTurn(prompt, "message");
-      if (!ctx.addressed || first.sent) return first.text;
-      // Someone addressed the agent, it wrote text instead of calling `send`: nobody saw it. One reminder turn; a failure of
-      // that extra turn is not fatal (the first turn is already persisted and was a valid run).
-      this.log.warn(`group ${this.d.groupId}: addressed but the agent did not call send; reminding it once`);
-      this.emit("turn.nudge", { reason: "addressed without send", dropped_chars: first.text.length });
+      await this.flushMemoryIfNeeded(prompt, images?.length);
+      await this.compactIfNeeded(prompt, images?.length);
+      const first = await this.runTurn(prompt, "message", images);
+      if ((!ctx.addressed && !ctx.mustSpeak) || first.sent) return first.text;
+      // Someone addressed the agent (or it was told it must speak), it wrote text instead of calling `send`: nobody saw it. One
+      // reminder turn; a failure of that extra turn is not fatal (the first turn is already persisted and was a valid run).
+      const reason = ctx.addressed ? "addressed without send" : "must speak without send";
+      this.log.warn(`group ${this.d.groupId}: ${reason}; reminding it once`);
+      this.emit("turn.nudge", { reason, dropped_chars: first.text.length });
       try {
-        return (await this.runTurn(SEND_NUDGE_PROMPT, "nudge")).text;
+        return (await this.runTurn(ctx.addressed ? SEND_NUDGE_PROMPT : SPEAK_NUDGE_PROMPT, "nudge")).text;
       } catch (err) {
         this.log.warn(`group ${this.d.groupId}: reminder turn failed: ${err instanceof Error ? err.message : String(err)}`);
         return first.text;
@@ -89,15 +97,15 @@ export class PiConversation implements Conversation {
   }
 
   /** One model turn: the prompt, the agent's whole tool loop, then persistence. A failed turn leaves no trace. */
-  private async runTurn(prompt: string, kind: "message" | "flush" | "nudge"): Promise<{ text: string; sent: boolean }> {
+  private async runTurn(prompt: string, kind: "message" | "flush" | "nudge", images?: ImageContent[]): Promise<{ text: string; sent: boolean }> {
     const state = this.d.session.agent.state;
     const from = state.messages.length;
     this.cur = { ...this.cur, turn: `t${++this.turnCount}`, kind };
     const t0 = Date.now();
-    this.emit("turn.start", { prompt_chars: prompt.length, context_messages: from, context_tokens: this.contextTokens(prompt), prompt: preview(this.events, prompt) });
+    this.emit("turn.start", { prompt_chars: prompt.length, images: images?.length ?? 0, context_messages: from, context_tokens: this.contextTokens(prompt, images?.length), prompt: preview(this.events, prompt) });
     let added: AgentMessage[];
     try {
-      await this.d.session.prompt(prompt);
+      await this.d.session.prompt(prompt, images?.length ? { images } : undefined);
       added = state.messages.slice(from);
     } catch (err) {
       this.setTranscript(state.messages.slice(0, from), { resetPruning: false });
@@ -177,10 +185,10 @@ export class PiConversation implements Conversation {
    * into its files (without `send`: this turn must not speak in the group). Runs once per cycle.
    * A failed flush is logged and not fatal: the context must still be bounded.
    */
-  private async flushMemoryIfNeeded(prompt: string): Promise<void> {
+  private async flushMemoryIfNeeded(prompt: string, images = 0): Promise<void> {
     const { session, context: c, groupId } = this.d;
     if (this.flushed) return;
-    const tokens = this.contextTokens(prompt);
+    const tokens = this.contextTokens(prompt, images);
     const threshold = c.compactTokens * c.flushRatio;
     if (tokens <= threshold) return;
 
@@ -207,10 +215,10 @@ export class PiConversation implements Conversation {
     }
   }
 
-  private contextTokens(prompt: string): number {
+  private contextTokens(prompt: string, images = 0): number {
     const { session } = this.d;
     const view = pruneExpensive(session.agent.state.messages, this.pruneOptions, this.pruneState, false);
-    return estimateContextTokens(session.systemPrompt, view) + estimateTextTokens(prompt);
+    return estimateContextTokens(session.systemPrompt, view) + estimateTextTokens(prompt) + images * IMAGE_TOKENS;
   }
 
   /** Size of the context the next request would carry (the estimate the compaction thresholds use). */
@@ -224,10 +232,10 @@ export class PiConversation implements Conversation {
   }
 
   /** Level 2: snap-compact older history once the (pruned) context passes the threshold. */
-  private async compactIfNeeded(prompt: string): Promise<void> {
+  private async compactIfNeeded(prompt: string, images = 0): Promise<void> {
     const { session, context: c, groupId } = this.d;
     const state = session.agent.state;
-    const tokens = this.contextTokens(prompt);
+    const tokens = this.contextTokens(prompt, images);
     if (tokens <= c.compactTokens) return;
 
     const offset = this.archived ? 1 : 0;

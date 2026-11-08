@@ -1,5 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { isArchiveMessage } from "./archive.js";
+import { imageKey } from "./image-key.js";
 import { estimateMessageTokens, estimateTextTokens } from "./estimate.js";
 
 export interface PruneOptions {
@@ -36,15 +37,45 @@ export function pruneExpensive(messages: readonly AgentMessage[], opts: PruneOpt
     if (acc > opts.recentTokens) break;
     boundary--;
   }
+  // Pictures of the turn in progress are never cleared: the model may need to look at them again after a tool call.
+  const lastUser = messages.findLastIndex((m) => m.role === "user" && !isArchiveMessage(m));
   let through = Math.min(state.through, messages.length);
   let eligible = 0;
-  for (let i = through; i < boundary; i++) if (clearBlocks(messages[i]!, opts.minBlockTokens) !== messages[i]) eligible++;
+  for (let i = through; i < boundary; i++) if (clearBlocks(messages[i]!, opts.minBlockTokens, i < lastUser) !== messages[i]) eligible++;
   if (eligible >= (opts.batchBlocks ?? 1)) through = boundary;
   if (commit) state.through = through; // `commit: false` is for estimates: they must not move the real watermark
-  return messages.map((m, i) => (i < through && !isArchiveMessage(m) ? clearBlocks(m, opts.minBlockTokens) : m));
+  return dedupeImages(messages.map((m, i) => (i < through ? clearBlocks(m, opts.minBlockTokens, i < lastUser) : m)));
 }
 
-function clearBlocks(m: AgentMessage, min: number): AgentMessage {
+/**
+ * The same picture sent more than once is shown once, at its newest occurrence (older copies become a placeholder), so
+ * it is billed once. Part of the view, deterministic: only changes when a new copy arrives. Archive frames are exempt.
+ */
+function dedupeImages(messages: AgentMessage[]): AgentMessage[] {
+  const seen = new Set<string>();
+  const out = [...messages];
+  for (let i = out.length - 1; i >= 0; i--) {
+    const m = out[i]!;
+    if (m.role !== "user" || !Array.isArray(m.content) || isArchiveMessage(m) || !m.content.some((c) => c.type === "image")) continue;
+    let changed = false;
+    const content = m.content.map((c) => {
+      if (c.type !== "image") return c;
+      const key = imageKey(c);
+      if (!seen.has(key)) return seen.add(key), c;
+      changed = true;
+      return { type: "text" as const, text: "[重复图片：同一张图见后文]" };
+    });
+    if (changed) out[i] = { ...m, content };
+  }
+  return out;
+}
+
+function clearBlocks(m: AgentMessage, min: number, clearImages: boolean): AgentMessage {
+  if (isArchiveMessage(m)) return m; // its frames are the compacted history: never cleared
+  if (clearImages && m.role === "user" && Array.isArray(m.content) && m.content.some((c) => c.type === "image")) {
+    // A picture is billed every request (~3k tokens). Once it is out of the recent window the model keeps the sender's text only.
+    return { ...m, content: m.content.map((c) => (c.type === "image" ? { type: "text" as const, text: "[已清理：图片]" } : c)) };
+  }
   if (m.role === "toolResult") {
     const tokens = estimateMessageTokens(m);
     if (tokens < min) return m;

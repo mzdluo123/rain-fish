@@ -3,7 +3,7 @@ import { loadConfig } from "../src/config.js";
 
 describe("loadConfig", () => {
   it("has working defaults", () => {
-    expect(loadConfig({})).toEqual({ wsUrl: "ws://127.0.0.1:3001", token: undefined, groups: undefined, promptFile: "prompts/agent.md", dbPath: "data/bot.db", logLevel: "info", model: undefined, thinkingLevel: undefined, context: { recentTokens: 12_000, pruneMinTokens: 800, pruneBatchBlocks: 4, compactTokens: 60_000, archiveTokens: 20_000, flushRatio: 0.85 }, wake: { chatMeanMs: 30_000, addressedMeanMs: 2_000 }, backfill: { minMessages: 100, maxAgeSeconds: 5 * 86_400 }, trace: { enabled: true, dir: "data/logs", maxFileBytes: 20 * 1024 * 1024, maxFiles: 30, maxAgeDays: 14, compress: true, content: false } });
+    expect(loadConfig({})).toEqual({ wsUrl: "ws://127.0.0.1:3001", token: undefined, groups: undefined, promptFile: "prompts/agent.md", dbPath: "data/bot.db", logLevel: "info", model: undefined, thinkingLevel: undefined, context: { recentTokens: 12_000, pruneMinTokens: 800, pruneBatchBlocks: 4, compactTokens: 60_000, archiveTokens: 20_000, flushRatio: 0.85 }, speakEveryRuns: 5, wake: { chatMeanMs: 30_000, addressedMeanMs: 2_000 }, images: { maxBytes: 3 * 1024 * 1024, maxPerRun: 4 }, backfill: { minMessages: 100, maxAgeSeconds: 5 * 86_400 }, trace: { enabled: true, dir: "data/logs", maxFileBytes: 20 * 1024 * 1024, maxFiles: 30, maxAgeDays: 14, compress: true, content: false } });
   });
 
   it("treats empty values (KEY= in .env) as unset, so defaults apply", () => {

@@ -5,7 +5,7 @@
  */
 import type { Database } from "bun:sqlite";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Model } from "@earendil-works/pi-ai";
+import type { ImageContent, Model } from "@earendil-works/pi-ai";
 import type {
   EditOperations,
   ModelRuntime,
@@ -187,6 +187,19 @@ export type TraceConfig = Config["trace"];
 
 // ---- core (the only shapes the bot logic ever sees) --------------------------------
 
+/** Fetches the pictures of the messages the agent is about to see. */
+export interface ImageSource {
+  /** At most this many images (the newest of a batch) are attached to one run. */
+  maxPerRun: number;
+  /** Never throws: `undefined` when the image cannot be had. */
+  load(url: string): Promise<ImageContent | undefined>;
+}
+
+/** An image of a group message: where QQ serves it. The URL expires, so it is only good for a short while. */
+export interface ImageRef {
+  url: string;
+}
+
 /** A validated group message, already flattened to plain text. */
 export interface GroupMessage extends StoredMessage {
   platform: "qq";
@@ -198,6 +211,8 @@ export interface GroupMessage extends StoredMessage {
   mentionsSelf: boolean;
   /** Message this one replies to, if any. */
   replyToMessageId?: string;
+  /** Pictures (not stickers) attached to the message, in order; fetched only when the agent is run on the batch. */
+  images?: ImageRef[];
 }
 
 /** A group message queued for the agent; `addressed`: it @-mentions the bot or replies to one of its messages. */
@@ -290,7 +305,9 @@ export interface Conversation {
    * `run` correlates the turn's events with the responder's. `addressed`: the batch @-mentions the agent or replies to
    * it, so a turn that ends without `send` is followed by one reminder turn. Throws if the model call fails.
    */
-  ask(prompt: string, ctx?: { run?: string; addressed?: boolean }): Promise<string>;
+  ask(prompt: string, ctx?: { run?: string; addressed?: boolean; mustSpeak?: boolean; images?: ImageContent[] }): Promise<string>;
+  /** The model can read images; unset/false: the responder does not fetch any. */
+  readonly acceptsImages?: boolean;
 }
 
 export type ConversationFactory = (groupId: string) => Promise<Conversation>;

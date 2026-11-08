@@ -16,6 +16,8 @@ const empty = z.looseObject({});
 const textSegment = z.object({ type: z.literal("text"), data: z.object({ text: z.string() }) });
 const atSegment = z.object({ type: z.literal("at"), data: z.object({ qq: idSchema, name: z.string().optional() }) });
 const replySegment = z.object({ type: z.literal("reply"), data: z.object({ id: idSchema }) });
+/** Pictures (`image` photos and stickers, `mface` market stickers): only `url` is used; without one the segment is the plain `simple` variant below and stays a text placeholder. */
+const picture = <T extends string>(type: T) => z.object({ type: z.literal(type), data: z.object({ url: z.string().min(1) }) });
 const simple = <T extends string>(type: T) => z.object({ type: z.literal(type), data: empty });
 const unknownSegment = z
   .object({ type: z.string(), data: empty.optional() })
@@ -25,6 +27,8 @@ export const segmentSchema = z.union([
   textSegment,
   atSegment,
   replySegment,
+  picture("image"),
+  picture("mface"),
   simple("face"),
   simple("mface"),
   simple("dice"),

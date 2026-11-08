@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { buildArchiveMessage } from "../src/context/archive.js";
 import { pruneExpensive, type PruneState } from "../src/context/prune.js";
 import { assistantCall, assistantText, tokensOf, toolResultMsg, userMsg } from "./helpers.js";
@@ -65,6 +66,34 @@ describe("pruneExpensive (level 1)", () => {
     const archive = await buildArchiveMessage(tokensOf(3000), { model: undefined, archiveTokens: 100_000 });
     const out = pruneExpensive([archive, userMsg(tokensOf(600))], { recentTokens: 100, minBlockTokens: 10 });
     expect(out[0]).toBe(archive);
+  });
+
+  it("clears pictures of old user messages (text kept), leaves recent ones and the archive frames alone", async () => {
+    const png = { type: "image" as const, data: "AAAA", mimeType: "image/png" };
+    const pic = (t: string): AgentMessage => ({ role: "user", content: [{ type: "text", text: t }, png], timestamp: 1 });
+    const archive = await buildArchiveMessage("¶user: x", { model: undefined, archiveTokens: 1000 });
+    const old = pic("旧图");
+    const recent = pic("新图");
+    const out = pruneExpensive([archive, old, assistantText(tokensOf(400)), recent], opts);
+    expect(out[0]).toBe(archive);
+    expect(text(out[1])).toContain("旧图");
+    expect(text(out[1])).toContain("已清理：图片");
+    expect(text(out[1])).not.toContain("AAAA");
+    expect(out[3]).toBe(recent);
+  });
+
+  it("shows a picture sent several times once, at its newest copy; the stored history is untouched", () => {
+    const pic = (t: string, data: string): AgentMessage => ({ role: "user", content: [{ type: "text", text: t }, { type: "image", data, mimeType: "image/png" }], timestamp: 1 });
+    const first = pic("第一次", "AAAA");
+    const other = pic("别的图", "BBBB");
+    const again = pic("又来了", "AAAA");
+    const out = pruneExpensive([first, assistantText("ok"), other, assistantText("ok"), again], { recentTokens: 100_000, minBlockTokens: 500 });
+    expect(text(out[0])).toContain("重复图片");
+    expect(text(out[0])).toContain("第一次");
+    expect(text(out[0])).not.toContain("AAAA");
+    expect(out[2]).toBe(other);
+    expect(out[4]).toBe(again);
+    expect(text(first)).toContain("AAAA");
   });
 });
 

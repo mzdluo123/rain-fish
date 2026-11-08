@@ -5,7 +5,9 @@ import { createPiConversationFactory } from "./conversation-factory.js";
 import { openDb } from "./db/open.js";
 import { PendingStore } from "./pending-store.js";
 import { OneBotClient } from "./qq/client.js";
+import { createImageSource } from "./images.js";
 import { PiResponder } from "./responder.js";
+import { SpeakStore } from "./speak-store.js";
 import { MessageStore } from "./store.js";
 
 const { config, logger, events } = bootstrap();
@@ -20,7 +22,7 @@ const makeConversation = await orExit(logger, () =>
 );
 const responder = new PiResponder(
   makeConversation,
-  { wake: config.wake, pending: new PendingStore(db), logger, events },
+  { wake: config.wake, speakEveryRuns: config.speakEveryRuns, speakStore: new SpeakStore(db), pending: new PendingStore(db), images: config.images.maxBytes > 0 && config.images.maxPerRun > 0 ? createImageSource({ ...config.images, logger }) : undefined, logger, events },
 );
 let backfilled = false;
 const client = new OneBotClient({
@@ -50,7 +52,9 @@ events.emit("proc.start", {
   model: config.model ?? "(Pi default)",
   groups: config.groups ? [...config.groups] : "all",
   wake: config.wake,
+  speakEveryRuns: config.speakEveryRuns,
   context: config.context,
+  images: config.images,
   backfill: config.backfill,
   trace: { dir: config.trace.dir, content: config.trace.content },
 });

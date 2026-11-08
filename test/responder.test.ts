@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
-import { formatBatch, formatPrompt, PiResponder, sampleExponential, type PiResponderOptions } from "../src/responder.js";
-import type { Conversation, GroupMessage } from "../src/types.js";
+import { attachImages, formatBatch, formatPrompt, PiResponder, sampleExponential, type PiResponderOptions } from "../src/responder.js";
+import type { ImageContent } from "@earendil-works/pi-ai";
+import type { Conversation, GroupMessage, ImageSource, PendingMessage } from "../src/types.js";
 import { openDb } from "../src/db/open.js";
 import { PendingStore } from "../src/pending-store.js";
+import { SpeakStore } from "../src/speak-store.js";
 import { memoryEventLog, recordingLogger } from "./helpers.js";
 
 beforeEach(() => jest.useFakeTimers());
@@ -97,6 +99,124 @@ describe("formatBatch", () => {
     expect(text).toContain("@2165509679 才是在叫你");
     expect(text.indexOf("</system>")).toBeLessThan(text.indexOf("<message "));
     expect(text.match(/<message /g)).toHaveLength(2);
+  });
+});
+
+describe("images in a batch", () => {
+  const img = (tag: string): ImageContent => ({ type: "image", data: tag, mimeType: "image/png" });
+  const withImages = (text: string, id: string, urls: string[]): PendingMessage => ({ msg: { ...msg("1", text, id), images: urls.map((url) => ({ url })) }, addressed: false });
+  const source = (maxPerRun: number, failing: string[] = []): ImageSource => ({
+    maxPerRun,
+    load: async (url) => (failing.includes(url) ? undefined : img(url)),
+  });
+
+  it("attaches an identical picture once; both messages point at the same number", async () => {
+    const same: ImageSource = { maxPerRun: 4, load: async (u) => img(u.startsWith("dup") ? "same" : u) };
+    const batch = [withImages("a", "1", ["dup1"]), withImages("b", "2", ["u2", "dup2"])];
+    const { images, numbers } = await attachImages(batch, same);
+    expect(images.map((i) => i.data)).toEqual(["same", "u2"]);
+    expect(numbers).toEqual([[1], [2, 1]]);
+    expect(formatBatch(batch, numbers)).toContain("2 image(s) are attached");
+  });
+
+  it("attaches the newest pictures, numbers them in order, and leaves failed ones as text", async () => {
+    const batch = [withImages("a", "1", ["u1", "u2"]), withImages("b", "2", ["u3"]), withImages("c", "3", ["u4", "u5"])];
+    const { images, numbers } = await attachImages(batch, source(3, ["u4"])); // wanted: u3, u4, u5; u4 is gone
+    expect(images.map((i) => i.data)).toEqual(["u3", "u5"]);
+    expect(numbers).toEqual([[], [1], [2]]);
+    const text = formatBatch(batch, numbers);
+    expect(text).toContain('id="2" sender="Alice" user_id="42" images="1">');
+    expect(text).toContain('id="3" sender="Alice" user_id="42" images="2">');
+    expect(text).not.toContain('id="1" sender="Alice" user_id="42" images');
+    expect(text).toMatch(/<system>\n2 image\(s\) are attached/);
+  });
+
+  it("adds no image notice when nothing was attached", () => {
+    expect(formatBatch([withImages("a", "1", ["u1"])], [[]])).not.toContain("image(s)");
+  });
+
+  it("hands the images to a vision conversation, and fetches nothing for a text-only one", async () => {
+    const asked: { prompt: string; images?: ImageContent[] }[] = [];
+    const conv = (acceptsImages: boolean): Conversation => ({ acceptsImages, async ask(prompt, ctx) { asked.push({ prompt, images: ctx?.images }); return ""; } });
+    let loads = 0;
+    const counting: ImageSource = { maxPerRun: 4, load: async (u) => (loads++, img(u)) };
+    for (const vision of [true, false]) {
+      const r = new PiResponder(async () => conv(vision), opts(10, 10, { images: counting }));
+      r.notify({ ...msg("g" + vision, "look"), images: [{ url: "u1" }] }, false);
+      jest.advanceTimersByTime(20);
+      await flush();
+    }
+    expect(asked[0]!.images?.map((i) => i.data)).toEqual(["u1"]);
+    expect(asked[0]!.prompt).toContain('images="1"');
+    expect(asked[1]!.images).toBeUndefined();
+    expect(asked[1]!.prompt).not.toContain("images=");
+    expect(loads).toBe(1);
+  });
+});
+
+describe("must-speak notice", () => {
+  it("is added to every (N+1)th run of a group, counted per group, and to no other", async () => {
+    const seen: { prompt: string; mustSpeak?: boolean }[] = [];
+    const conv: Conversation = { async ask(prompt, ctx) { seen.push({ prompt, mustSpeak: ctx?.mustSpeak }); return ""; } };
+    const r = new PiResponder(async () => conv, opts(10, 10, { speakEveryRuns: 2 }));
+    for (let i = 1; i <= 7; i++) {
+      r.notify(msg("1", `m${i}`, String(i)), false);
+      jest.advanceTimersByTime(20);
+      await flush();
+    }
+    expect(seen.map((s) => s.prompt.includes("必须要说点什么"))).toEqual([false, false, true, false, false, true, false]);
+    expect(seen.map((s) => s.mustSpeak)).toEqual([false, false, true, false, false, true, false]);
+    r.notify(msg("2", "other group", "99"), false); // another group has its own count
+    jest.advanceTimersByTime(20);
+    await flush();
+    expect(seen.at(-1)!.prompt).not.toContain("必须要说点什么");
+  });
+
+  it("keeps the count across a restart, and a failed run does not count", async () => {
+    const db = openDb(":memory:");
+    const seen: string[] = [];
+    let fail = false;
+    const conv: Conversation = { async ask(prompt) { seen.push(prompt); if (fail) throw new Error("rate limited"); return ""; } };
+    const start = () => new PiResponder(async () => conv, opts(10, 10, { speakEveryRuns: 3, speakStore: new SpeakStore(db) }));
+    const send = async (r: PiResponder, id: number) => {
+      r.notify(msg("1", `m${id}`, String(id)), false);
+      jest.advanceTimersByTime(20);
+      await flush();
+    };
+    let r = start();
+    await send(r, 1);
+    await send(r, 2);
+    fail = true;
+    await send(r, 3); // fails: not counted
+    fail = false;
+    r = start(); // restart: 2 runs are remembered
+    await send(r, 4); // 3rd counted run
+    await send(r, 5); // must speak
+    expect(seen.map((p) => p.includes("必须要说点什么"))).toEqual([false, false, false, false, true]);
+    r = start();
+    await send(r, 6); // the counter was reset by the notice run, and that reset survived the restart
+    expect(seen.at(-1)).not.toContain("必须要说点什么");
+    expect(new SpeakStore(db).load("1")).toBe(1);
+  });
+
+  it("only appends to the turn, so everything before it is byte-identical (the provider's prompt cache still hits)", () => {
+    const batch = [{ msg: { ...msg("1", "你好"), selfId: "9" }, addressed: false }];
+    const plain = formatBatch(batch, [[1]]);
+    const withNotice = formatBatch(batch, [[1]], true);
+    expect(withNotice.startsWith(plain)).toBe(true);
+    expect(withNotice.slice(plain.length)).toMatch(/^\n\n<system>\n你必须要说点什么来插入群友的聊天/);
+  });
+
+  it("is never added when the setting is off", async () => {
+    const seen: string[] = [];
+    const conv: Conversation = { async ask(prompt) { seen.push(prompt); return ""; } };
+    const r = new PiResponder(async () => conv, opts(10, 10));
+    for (let i = 1; i <= 8; i++) {
+      r.notify(msg("1", `m${i}`, String(i)), false);
+      jest.advanceTimersByTime(20);
+      await flush();
+    }
+    expect(seen.some((p) => p.includes("必须要说点什么"))).toBe(false);
   });
 });
 

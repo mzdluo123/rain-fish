@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { ImageContent } from "@earendil-works/pi-ai";
 import { isArchiveMessage } from "../src/context/archive.js";
 import { PiConversation } from "../src/conversation.js";
 import { ConversationStore } from "../src/conversation-store.js";
@@ -27,12 +28,12 @@ function fakeSession(opts: { vision?: boolean; script?: Script } = {}) {
     agent: { state, transformContext: undefined as ((m: AgentMessage[], s?: AbortSignal) => Promise<AgentMessage[]>) | undefined },
     model: { api: "openai-responses", id: "gpt-5.5", provider: "openai", input: opts.vision === false ? ["text"] : ["text", "image"] },
     systemPrompt: "",
-    async prompt(text: string) {
+    async prompt(text: string, o?: { images?: ImageContent[] }) {
       toolsPerPrompt.push([...active]);
       // Like Pi 1.x: the request is built from the SessionManager's transcript, not from whatever was assigned to state.messages.
       state.messages = [...session.sessionManager.entries];
       session.promptSaw.push(state.messages.length);
-      state.messages = [...state.messages, { role: "user", content: text, timestamp: Date.now() }, ...(opts.script ?? (() => [assistantText("好的")]))(text, ++turn)];
+      state.messages = [...state.messages, { role: "user", content: o?.images?.length ? [{ type: "text", text }, ...o.images] : text, timestamp: Date.now() }, ...(opts.script ?? (() => [assistantText("好的")]))(text, ++turn)];
       session.sessionManager.entries = [...state.messages];
     },
     promptSaw: [] as number[],
@@ -362,6 +363,14 @@ describe("reminder to send", () => {
     expect(session.toolsPerPrompt[1]).toContain("send");
   });
 
+  it("a must-speak batch answered with plain text gets one reminder turn with its own wording", async () => {
+    const { conv, session } = await setup({ script: (_p, n) => (n === 1 ? [assistantText("嗯")] : sendCall(n)) });
+    await conv.ask("闲聊", { mustSpeak: true });
+    expect(prompts(session)).toHaveLength(2);
+    expect(prompts(session)[1]).toContain("必须说点什么");
+    expect(prompts(session)[1]).not.toContain("@ 了你");
+  });
+
   it("does not remind when the agent already sent, when nobody addressed it, or after one reminder", async () => {
     const sent = await setup({ script: (_p, n) => sendCall(n) });
     await sent.conv.ask("@你", { addressed: true });
@@ -385,5 +394,35 @@ describe("reminder to send", () => {
     const flaky = await setup({ script: (_p, n) => (n === 1 ? [assistantText("我在")] : [assistantError("rate limited")]) });
     expect(await flaky.conv.ask("@你", { addressed: true })).toBe("我在");
     expect(prompts(flaky.session)).toHaveLength(1); // the failed reminder turn left no trace
+  });
+});
+
+describe("images", () => {
+  const png: ImageContent = { type: "image", data: "AAAA", mimeType: "image/png" };
+  const userContent = (s: { state: { messages: AgentMessage[] } }) => s.state.messages.find((m) => m.role === "user")!.content;
+
+  it("a vision model gets the pictures in the user turn, and they survive a restart", async () => {
+    const a = await setup();
+    expect(a.conv.acceptsImages).toBe(true);
+    await a.conv.ask("看图", { images: [png] });
+    expect(userContent(a.session)).toEqual([{ type: "text", text: "看图" }, png]);
+    const b = await setup({ db: a.db });
+    expect(userContent(b.session)).toEqual([{ type: "text", text: "看图" }, png]);
+  });
+
+  it("a text-only model never receives them", async () => {
+    const a = await setup({ vision: false });
+    expect(a.conv.acceptsImages).toBe(false);
+    await a.conv.ask("看图", { images: [png] });
+    expect(userContent(a.session)).toBe("看图");
+  });
+
+  it("counts pictures towards the compaction threshold", async () => {
+    // ~2.5k system overhead + 3 pictures * 3k tokens already passes compact (6000): the older turn must be archived
+    const a = await setup({ script: bigScript });
+    await a.conv.ask("先说点话 " + tokensOf(100));
+    await a.conv.ask("再说 " + tokensOf(100));
+    await a.conv.ask("图", { images: [png, png, png] });
+    expect(roles(a.session)).toContain("archive");
   });
 });

@@ -13,6 +13,22 @@ const convert = (over: Record<string, unknown>): GroupMessage | null => {
 const text = (t: string) => ({ type: "text", data: { text: t } });
 
 describe("toGroupMessage", () => {
+  it("keeps the url of photos, stickers and market stickers, but not of url-less ones", () => {
+    const m = convert({
+      message: [
+        { type: "image", data: { url: "https://multimedia.nt.qq.com.cn/a", sub_type: 0, file: "x.jpg" } },
+        { type: "image", data: { url: "https://multimedia.nt.qq.com.cn/s", sub_type: 1 } },
+        { type: "mface", data: { url: "https://gxh.vip.qq.com/m.gif", emoji_id: "1", summary: "[x]" } },
+        { type: "image", data: {} },
+        { type: "mface", data: { emoji_id: "2" } },
+        { type: "face", data: { id: "1" } },
+      ],
+    });
+    expect(m?.images).toEqual([{ url: "https://multimedia.nt.qq.com.cn/a" }, { url: "https://multimedia.nt.qq.com.cn/s" }, { url: "https://gxh.vip.qq.com/m.gif" }]);
+    expect(m?.text).toBe("[图片][图片][表情][图片][表情][表情]"); // every picture stays visible as text
+    expect(convert({ message: [text("no pictures")] })).not.toHaveProperty("images");
+  });
+
   it("flattens segments to searchable text", () => {
     const m = convert({
       message: [

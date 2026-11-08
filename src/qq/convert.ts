@@ -40,6 +40,8 @@ export function toGroupMessage(e: GroupMessageEvent): GroupMessage | null {
   if (!text) return null;
   const nickname = e.sender?.card?.trim() || e.sender?.nickname?.trim() || e.user_id;
   const reply = e.message.find((s) => s.type === "reply");
+  // Photos, stickers (image sub_type 1) and market stickers (mface) are all sent to the model.
+  const images = e.message.flatMap((s) => ((s.type === "image" || s.type === "mface") && "url" in s.data && typeof s.data.url === "string" ? [{ url: s.data.url }] : []));
   return {
     platform: "qq",
     groupId: e.group_id,
@@ -52,5 +54,6 @@ export function toGroupMessage(e: GroupMessageEvent): GroupMessage | null {
     isSelf: e.post_type === "message_sent" || e.user_id === e.self_id,
     mentionsSelf: e.message.some((s) => s.type === "at" && s.data.qq === e.self_id),
     replyToMessageId: reply?.type === "reply" ? reply.data.id : undefined,
+    ...(images.length > 0 ? { images } : {}),
   };
 }

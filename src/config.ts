@@ -58,11 +58,18 @@ export const configSchema = z
     WAKE_CHAT_MEAN_SECONDS: z.coerce.number().nonnegative().default(30),
     /** Same, once a pending message @-mentions the bot or replies to it. 0 = wake at the next tick. */
     WAKE_ADDRESSED_MEAN_SECONDS: z.coerce.number().nonnegative().default(2),
+    /** Every this many agent runs of a group, the next batch carries a system notice that the agent must say something. 0 = never. */
+    SPEAK_EVERY_RUNS: z.coerce.number().int().nonnegative().default(5),
     // --- history backfill ---
     /** At startup, a group with fewer stored messages than this gets its recent history pulled from the QQ API. 0 = never. */
     BACKFILL_MIN_MESSAGES: z.coerce.number().int().nonnegative().default(100),
     /** Only messages newer than this many days are backfilled. */
     BACKFILL_MAX_AGE_DAYS: z.coerce.number().positive().default(5),
+    // --- images ---
+    /** Largest image (bytes) fetched for the agent; bigger ones stay a `[图片]` placeholder. 0 = images are never fetched. Needs a vision model. */
+    IMAGE_MAX_BYTES: z.coerce.number().int().nonnegative().default(3 * 1024 * 1024),
+    /** At most this many images (the newest) are attached to one wake-up; the rest stay placeholders. */
+    IMAGE_MAX_PER_RUN: z.coerce.number().int().nonnegative().default(4),
     // --- execution trace (structured, rotating event log) ---
     TRACE_ENABLED: flag(true),
     /** Directory of the trace files (`agent.jsonl` + rotated `agent.<time>.jsonl.gz`). */
@@ -94,9 +101,14 @@ export const configSchema = z
       archiveTokens: e.CONTEXT_ARCHIVE_TOKENS,
       flushRatio: e.CONTEXT_FLUSH_RATIO,
     },
+    speakEveryRuns: e.SPEAK_EVERY_RUNS,
     wake: {
       chatMeanMs: e.WAKE_CHAT_MEAN_SECONDS * 1000,
       addressedMeanMs: e.WAKE_ADDRESSED_MEAN_SECONDS * 1000,
+    },
+    images: {
+      maxBytes: e.IMAGE_MAX_BYTES,
+      maxPerRun: e.IMAGE_MAX_PER_RUN,
     },
     backfill: {
       minMessages: e.BACKFILL_MIN_MESSAGES,
