@@ -9,11 +9,15 @@ export const AGENT_MAX_FILE_BYTES = 10 * 1024;
  * What the agent may write: Markdown files only, each at most `AGENT_MAX_FILE_BYTES`. The error text is
  * the agent's only instruction when it hits the size limit, so it spells out how to reorganise.
  */
-export function assertAgentWritable(p: string, content: string | Uint8Array): void {
-  const n = VirtualFs.normalize(p);
+function assertMarkdownPath(n: string): void {
   if (!/\.md$/i.test(n)) {
     throw new Error(`EINVAL: only Markdown files can be created or modified, and '${n}' is not a .md file. Use a file name ending in .md.`);
   }
+}
+
+export function assertAgentWritable(p: string, content: string | Uint8Array): void {
+  const n = VirtualFs.normalize(p);
+  assertMarkdownPath(n);
   if (n === WAKE_RULES_PATH) validateWakeRulesWrite(content); // a table that does not parse is never written
   const bytes = typeof content === "string" ? Buffer.byteLength(content, "utf-8") : content.byteLength;
   if (bytes > AGENT_MAX_FILE_BYTES) {
@@ -26,8 +30,11 @@ export function assertAgentWritable(p: string, content: string | Uint8Array): vo
   }
 }
 
-/** Pi tool backends (read / write / edit / ls) on top of the virtual filesystem. */
-export function createVfsOperations(vfs: VirtualFs): VfsOperations {
+/**
+ * Pi tool backends (read / write / edit / ls) on top of the virtual filesystem. `beforeEdit` runs first for every `edit` (after the
+ * file is known to exist) and may throw to refuse it; the agent wires it to "the file must be in the context window" (`assertSeenBeforeEdit`).
+ */
+export function createVfsOperations(vfs: VirtualFs, opts: { beforeEdit?: (p: string) => void } = {}): VfsOperations {
   const requireExists = (p: string) => {
     if (!vfs.exists(p)) throw new Error(`ENOENT: no such file or directory, '${VirtualFs.normalize(p)}'`);
   };
@@ -44,7 +51,7 @@ export function createVfsOperations(vfs: VirtualFs): VfsOperations {
     edit: {
       readFile: async (p) => vfs.readFile(p),
       writeFile: async (p, content) => (assertAgentWritable(p, content), vfs.writeFile(p, content)),
-      access: async (p) => requireExists(p),
+      access: async (p) => (requireExists(p), assertMarkdownPath(VirtualFs.normalize(p)), opts.beforeEdit?.(p)),
     },
     ls: {
       exists: (p) => vfs.exists(p),

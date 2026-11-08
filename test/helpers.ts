@@ -133,3 +133,23 @@ export function pngBytes(width: number, height: number): Buffer {
   ihdr[9] = 6;
   return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", require("node:zlib").deflateSync(rows)), chunk("IEND", Buffer.alloc(0))]);
 }
+
+/**
+ * Puts a finished tool call on `path` into the agent session's context window, as if the model had made it in an earlier step
+ * (`read` by default; `args` can add offset/limit, `isError` makes it a failed call). Tests call the tools directly, so this
+ * is how they satisfy "the file must have been read before an edit".
+ */
+export function markSeen(
+  session: { agent: { state: { messages: unknown[] } } },
+  path: string,
+  opts: { name?: "read" | "write" | "edit"; args?: Record<string, unknown>; isError?: boolean; timestamp?: number } = {},
+): void {
+  const id = `seen-${Math.random().toString(36).slice(2)}`;
+  const name = opts.name ?? "read";
+  const timestamp = opts.timestamp ?? Date.now();
+  session.agent.state.messages = [
+    ...session.agent.state.messages,
+    { role: "assistant", content: [{ type: "toolCall", id, name, arguments: { path, ...opts.args } }], timestamp },
+    { role: "toolResult", toolCallId: id, toolName: name, content: [{ type: "text", text: "" }], isError: opts.isError ?? false, timestamp },
+  ];
+}

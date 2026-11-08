@@ -1,9 +1,10 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { createAgent } from "../src/agent.js";
-import { makeEnv } from "./helpers.js";
+import { makeEnv, markSeen } from "./helpers.js";
 
 const env = makeEnv();
+let session: Awaited<ReturnType<typeof createAgent>>["session"];
 let tools: Map<string, { execute: (id: string, args: never) => Promise<{ content: { type: string; text?: string }[] }> }>;
 
 async function call(name: string, args: Record<string, unknown>): Promise<string> {
@@ -12,7 +13,7 @@ async function call(name: string, args: Record<string, unknown>): Promise<string
 }
 
 beforeAll(async () => {
-  const { session } = await createAgent(env);
+  ({ session } = await createAgent(env));
   tools = new Map(session.agent.state.tools.map((t) => [t.name, t as never]));
 });
 
@@ -21,6 +22,7 @@ describe("file tools work on the database", () => {
     await call("write", { path: "notes/a.md", content: "hello world\nsecond line" });
     expect(env.fs.readText("/notes/a.md")).toBe("hello world\nsecond line");
     expect(await call("read", { path: "/notes/a.md" })).toContain("hello world");
+    markSeen(session, "notes/a.md"); // in the real loop the read result is in the context by the next step
     await call("edit", { path: "notes/a.md", edits: [{ oldText: "hello", newText: "bye" }] });
     expect(env.fs.readText("/notes/a.md")).toBe("bye world\nsecond line");
     expect(await call("ls", { path: "/" })).toMatch(/notes\//);
