@@ -10,10 +10,13 @@ const { config, logger } = bootstrap();
 
 const db = openDb(config.dbPath); // messages, agent files, conversations, ... one SQLite file
 const store = new MessageStore(db);
-const responder = new PiResponder(orExit(logger, () => createPiConversationFactory(db, config, logger)));
-
-// The client and the bot reference each other: the client delivers messages, the bot sends replies through it.
+// The client and the bot reference each other: the client delivers messages, the bot sends through it.
+// The agent's `send` tool posts via the bot; the responder wakes the agent for batches of queued messages.
 let bot: Bot;
+const responder = new PiResponder(
+  orExit(logger, () => createPiConversationFactory(db, config, logger, (groupId, text, replyTo) => bot.sendText(groupId, text, replyTo))),
+  { wake: config.wake, logger },
+);
 const client = new OneBotClient({
   url: config.wsUrl,
   token: config.token,

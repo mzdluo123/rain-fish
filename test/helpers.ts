@@ -4,12 +4,17 @@ import { openDb } from "../src/db/open.js";
 import { MessageStore } from "../src/store.js";
 import { VirtualFs } from "../src/vfs.js";
 
-/** A fresh in-memory database with the agent's (empty) filesystem and message store, plus a system prompt. */
-export function makeEnv(systemPrompt = "# Persona\nYou are TESTBOT.") {
+/** A fresh in-memory database with the agent's (empty) filesystem and message store, a system prompt, and a `send` that records (or fails with `sendError`). */
+export function makeEnv(systemPrompt = "# Persona\nYou are TESTBOT.", sendError?: string) {
   const db = openDb(":memory:");
   const fs = new VirtualFs(db);
   const store = new MessageStore(db);
-  return { db, fs, store, systemPrompt };
+  const sent: { text: string; replyTo?: string }[] = [];
+  const send = async (text: string, replyTo?: string) => {
+    if (sendError) throw new Error(sendError);
+    sent.push({ text, replyTo });
+  };
+  return { db, fs, store, systemPrompt, groupId: "100", send, sent };
 }
 
 export interface LogEntry {

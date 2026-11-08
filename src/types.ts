@@ -128,8 +128,12 @@ export interface AgentDeps {
   modelRegistry?: ModelRegistry;
   /** The agent's whole filesystem (in the same SQLite file as everything else). */
   fs: VirtualFs;
-  /** Read-only message search is exposed to the agent as `search_messages`. */
+  /** Read-only search of this group's history is exposed to the agent as `search_messages`. */
   store: MessageStore;
+  /** The one group this agent serves; the agent never sees or names it. */
+  groupId: string;
+  /** Posts to this conversation's group; backs the agent's `send` tool. `replyTo` is a message id to quote. Rejects if delivery fails. */
+  send: SendFn;
 }
 
 // ---- QQ wire types (validated at the WebSocket edge, derived from schemas) --------
@@ -183,10 +187,21 @@ export interface QQApi {
   sendGroupMessage(groupId: string, message: OutboundSegment[]): Promise<{ messageId: string }>;
 }
 
-/** Produces the reply text for a message the bot was addressed in. Empty string = stay silent. */
+/** Posts `text` to a group (split if long), optionally quoting `replyTo`. Rejects if delivery fails. */
+export type GroupSender = (groupId: string, text: string, replyTo?: string) => Promise<void>;
+/** `GroupSender` bound to one group. */
+export type SendFn = (text: string, replyTo?: string) => Promise<void>;
+
+/**
+ * Receives the messages the agent should eventually see. It does not answer: the agent speaks
+ * through its `send` tool, whenever the responder wakes it.
+ */
 export interface GroupResponder {
-  respond(msg: GroupMessage): Promise<string>;
+  /** Queue `msg` for the group's next wake-up. `addressed`: it @-mentions the bot or replies to one of its messages. */
+  notify(msg: GroupMessage, addressed: boolean): void;
 }
+
+export type WakeConfig = Config["wake"];
 
 export interface BotOptions {
   store: MessageStore;
@@ -223,7 +238,7 @@ export type ContextConfig = Config["context"];
 
 /** One agent conversation (a group's, or the CLI's). */
 export interface Conversation {
-  /** Sends `prompt` and returns the reply text (empty = nothing to say). Throws if the model call fails. */
+  /** Runs the agent on `prompt` and returns its final text (the group never sees it: only `send` posts). Throws if the model call fails. */
   ask(prompt: string): Promise<string>;
 }
 

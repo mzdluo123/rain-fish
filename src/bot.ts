@@ -21,8 +21,9 @@ export function splitReply(text: string, max = MAX_REPLY_CHARS): string[] {
 }
 
 /**
- * Core bot logic. Sees only validated `GroupMessage`s: stores every message of the
- * handled groups, and answers when it is @-mentioned or someone replies to one of its messages.
+ * Core bot logic. Sees only validated `GroupMessage`s: stores every message of the handled groups and
+ * hands the others to the responder (flagging those addressed to the bot). It never answers itself:
+ * the agent posts through `send`, which the factory binds to `sendText`.
  */
 export class Bot {
   private readonly sent = new Set<string>(); // "group:messageId" of messages this bot sent
@@ -32,35 +33,30 @@ export class Bot {
     this.log = (opts.logger ?? noopLogger).withTag("bot");
   }
 
-  async handleGroupMessage(msg: GroupMessage): Promise<void> {
+  handleGroupMessage(msg: GroupMessage): void {
     const { store, groups } = this.opts;
     if (groups && !groups.has(msg.groupId)) return;
 
     store.insert(msg);
     this.log.debug(`group ${msg.groupId} ${msg.nickname}(${msg.userId}): ${msg.text.slice(0, 80)}`);
-    if (msg.isSelf || !this.isAddressedToBot(msg)) return;
-    this.log.info(`answering ${msg.nickname} in group ${msg.groupId}`);
+    if (msg.isSelf) return;
+    this.opts.responder.notify(msg, this.isAddressedToBot(msg));
+  }
 
-    let reply: string;
-    try {
-      reply = await this.opts.responder.respond(msg);
-    } catch (err) {
-      this.log.error(`responder failed in group ${msg.groupId}: ${errText(err)}`);
-      return;
-    }
-    const chunks = splitReply(reply);
+  /** Posts `text` to `groupId`, quoting `replyTo` on the first chunk. Throws if any chunk fails to send. */
+  async sendText(groupId: string, text: string, replyTo?: string): Promise<void> {
+    const chunks = splitReply(text);
     for (const [i, chunk] of chunks.entries()) {
       const segments: OutboundSegment[] = [{ type: "text", data: { text: chunk } }];
-      if (i === 0) segments.unshift({ type: "reply", data: { id: msg.messageId } });
+      if (i === 0 && replyTo) segments.unshift({ type: "reply", data: { id: replyTo } });
       try {
-        const { messageId } = await this.opts.api.sendGroupMessage(msg.groupId, segments);
-        this.remember(msg.groupId, messageId);
+        const { messageId } = await this.opts.api.sendGroupMessage(groupId, segments);
+        this.remember(groupId, messageId);
       } catch (err) {
-        this.log.error(`send failed in group ${msg.groupId}: ${errText(err)}`);
-        return;
+        throw new Error(`send to group ${groupId} failed after ${i}/${chunks.length} message(s): ${errText(err)}`);
       }
     }
-    this.log.success(`replied in group ${msg.groupId} to ${msg.nickname} (${reply.length} chars, ${chunks.length} message(s))`);
+    this.log.success(`sent to group ${groupId} (${text.length} chars, ${chunks.length} message(s))`);
   }
 
   private isAddressedToBot(msg: GroupMessage): boolean {

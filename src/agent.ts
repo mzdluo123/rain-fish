@@ -12,17 +12,18 @@ import {
   type ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
 import { createSearchMessagesTool, SEARCH_TOOL } from "./tools/search-messages.js";
+import { createSendTool, SEND_TOOL } from "./tools/send.js";
 import { createVfsFindTool, createVfsGrepTool } from "./tools/vfs-search.js";
 import type { AgentDeps } from "./types.js";
 import { createVfsOperations } from "./vfs-ops.js";
 
 /** The only tools the agent may ever use. `bash` is deliberately absent. */
-export const ALLOWED_TOOLS = ["read", "write", "edit", "ls", "find", "grep", SEARCH_TOOL] as const;
+export const ALLOWED_TOOLS = ["read", "write", "edit", "ls", "find", "grep", SEARCH_TOOL, SEND_TOOL] as const;
 
 /** The agent's working directory is the root of its virtual filesystem. */
 const VFS_ROOT = "/";
 
-export async function createAgent({ systemPrompt, fs, store, model, modelRegistry }: AgentDeps): Promise<{ session: AgentSession }> {
+export async function createAgent({ systemPrompt, fs, store, groupId, send, model, modelRegistry }: AgentDeps): Promise<{ session: AgentSession }> {
   const ops = createVfsOperations(fs);
 
   // Disable everything that could smuggle in extra tools or instructions
@@ -61,7 +62,8 @@ export async function createAgent({ systemPrompt, fs, store, model, modelRegistr
       createLsToolDefinition(VFS_ROOT, { operations: ops.ls }),
       createVfsFindTool(fs),
       createVfsGrepTool(fs),
-      createSearchMessagesTool(store),
+      createSearchMessagesTool(store, groupId),
+      createSendTool(send),
       // Pi's per-tool generics are invariant in renderCall; the array type is the SDK's erased form.
     ] as unknown as ToolDefinition[],
   });

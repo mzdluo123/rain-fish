@@ -38,6 +38,11 @@ export const configSchema = z
     CONTEXT_COMPACT_TOKENS: z.coerce.number().int().positive().default(60_000),
     /** Level 2: token budget of the archive (bitmap frames) that replaces the compacted history. */
     CONTEXT_ARCHIVE_TOKENS: z.coerce.number().int().positive().default(20_000),
+    // --- wake-ups ---
+    /** Mean seconds between agent wake-ups of a group while ordinary chatter is pending (Poisson process: exponential gaps). */
+    WAKE_CHAT_MEAN_SECONDS: z.coerce.number().nonnegative().default(30),
+    /** Same, once a pending message @-mentions the bot or replies to it. 0 = wake at the next tick. */
+    WAKE_ADDRESSED_MEAN_SECONDS: z.coerce.number().nonnegative().default(2),
   })
   .transform((e) => ({
     wsUrl: e.QQ_WS_URL,
@@ -52,6 +57,10 @@ export const configSchema = z
       pruneMinTokens: e.CONTEXT_PRUNE_MIN_TOKENS,
       compactTokens: e.CONTEXT_COMPACT_TOKENS,
       archiveTokens: e.CONTEXT_ARCHIVE_TOKENS,
+    },
+    wake: {
+      chatMeanMs: e.WAKE_CHAT_MEAN_SECONDS * 1000,
+      addressedMeanMs: e.WAKE_ADDRESSED_MEAN_SECONDS * 1000,
     },
   }))
   .refine((c) => c.context.recentTokens + c.context.archiveTokens < c.context.compactTokens, {

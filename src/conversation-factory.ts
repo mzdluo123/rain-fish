@@ -5,7 +5,7 @@ import { PiConversation } from "./conversation.js";
 import { ConversationStore } from "./conversation-store.js";
 import { createModelRegistry, resolveModel } from "./model.js";
 import { MessageStore } from "./store.js";
-import type { Config, Logger } from "./types.js";
+import type { Config, GroupSender, Logger } from "./types.js";
 import { VirtualFs } from "./vfs.js";
 
 /**
@@ -25,7 +25,7 @@ export function loadSystemPrompt(file: string): string {
   return text;
 }
 
-export function createPiConversationFactory(db: Database, config: Config, logger: Logger) {
+export function createPiConversationFactory(db: Database, config: Config, logger: Logger, send: GroupSender) {
   loadSystemPrompt(config.promptFile); // fail at startup, not on the first message
   const registry = createModelRegistry();
   const model = config.model ? resolveModel(registry, config.model) : undefined;
@@ -41,7 +41,15 @@ export function createPiConversationFactory(db: Database, config: Config, logger
 
   return async (groupId: string): Promise<PiConversation> => {
     // Re-read per conversation: an edit applies to groups whose conversation starts after it.
-    const { session } = await createAgent({ systemPrompt: loadSystemPrompt(config.promptFile), fs, store, model, modelRegistry: registry });
+    const { session } = await createAgent({
+      systemPrompt: loadSystemPrompt(config.promptFile),
+      fs,
+      store,
+      groupId,
+      send: (text, replyTo) => send(groupId, text, replyTo),
+      model,
+      modelRegistry: registry,
+    });
     session.subscribe((event) => {
       if (event.type === "tool_execution_start") toolLog.debug(`${event.toolName} ${JSON.stringify(event.args)}`);
     });

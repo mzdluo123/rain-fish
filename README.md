@@ -33,7 +33,7 @@ Credentials/model come from Pi's usual config (`~/.pi/agent`, or provider env va
 - Manage files from the host: `bun run fs ls|cat|put|import|export|rm` (run `bun run fs` for usage). `import` keeps files that already exist unless `--force`, so re-seeding never clobbers what the agent wrote. A fresh database needs no seeding.
 
 ## How it is locked down
-- `src/agent.ts`: tool allowlist `read, write, edit, ls, find, grep, search_messages`. Built-in `bash` is never enabled; extensions, skills, prompt templates and context files are off; startup aborts if any other tool is active.
+- `src/agent.ts`: tool allowlist `read, write, edit, ls, find, grep, search_messages, send`. Built-in `bash` is never enabled; extensions, skills, prompt templates and context files are off; startup aborts if any other tool is active. `send` only posts text to the conversation's own group through the bot.
 - File tools are backed by `VirtualFs`, not the host disk. Pi's built-in `find`/`grep` (which shell out to `fd`/`rg`) are replaced by database-backed versions.
 - Sessions are in memory only.
 
@@ -45,7 +45,9 @@ QQ_WS_URL=ws://127.0.0.1:3001 QQ_TOKEN=... QQ_GROUPS=123,456 bun run bot   # QQ_
 ```
 
 - Every group message is stored (SQLite FTS5, Chinese/Japanese segmented with `Intl.Segmenter`) and searchable by the agent through `search_messages`.
-- The bot answers when it is @-mentioned or when someone replies to one of its messages. One agent conversation per group (in memory); the reply quotes the triggering message and is split if long.
+- **Wake-ups.** Messages do not each cost a model call. Per group, every message of a handled group (not just @-mentions) is queued; the agent is woken at the arrival times of a Poisson process, i.e. after an exponentially distributed wait with mean `WAKE_CHAT_MEAN_SECONDS` (started by the first queued message), and sees everything queued in one prompt. Once a queued message @-mentions the bot or replies to one of its messages, the faster `WAKE_ADDRESSED_MEAN_SECONDS` process also runs and the earlier wake-up wins; such messages are flagged `【对你说】` in the prompt. Runs of a group never overlap; messages arriving during a run wait for the next wake-up. If a run fails, its messages are dropped (still stored and searchable), not retried.
+- **`send` tool.** The agent speaks only through `send(text, reply_to?)`; its plain output is not delivered. A successful `send` ends the run (`terminate`) until the next wake-up; long text is split, and `reply_to` quotes a message id (shown as `#id` in each prompt header). Not sending is how it stays silent. If the model calls other tools in the same step as `send`, the run continues after that step (Pi only stops when every tool call in a step asks to).
+- One agent conversation per group, resumed from SQLite.
 - Enable NapCat's `reportSelfMessage` (optional) so the bot's own messages are stored as well.
 - All incoming frames are validated with Zod at the edge (`src/qq/`); invalid ones are logged and dropped. Environment config is validated at startup too.
 - Without a model API key the bot still stores messages and logs a failed reply.

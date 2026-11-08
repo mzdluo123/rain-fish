@@ -3,7 +3,7 @@ import { loadConfig } from "../src/config.js";
 
 describe("loadConfig", () => {
   it("has working defaults", () => {
-    expect(loadConfig({})).toEqual({ wsUrl: "ws://127.0.0.1:3001", token: undefined, groups: undefined, promptFile: "prompts/agent.md", dbPath: "data/bot.db", logLevel: "info", model: undefined, context: { recentTokens: 12_000, pruneMinTokens: 800, compactTokens: 60_000, archiveTokens: 20_000 } });
+    expect(loadConfig({})).toEqual({ wsUrl: "ws://127.0.0.1:3001", token: undefined, groups: undefined, promptFile: "prompts/agent.md", dbPath: "data/bot.db", logLevel: "info", model: undefined, context: { recentTokens: 12_000, pruneMinTokens: 800, compactTokens: 60_000, archiveTokens: 20_000 }, wake: { chatMeanMs: 30_000, addressedMeanMs: 2_000 } });
   });
 
   it("treats empty values (KEY= in .env) as unset, so defaults apply", () => {
@@ -42,5 +42,17 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ CONTEXT_RECENT_TOKENS: "-5" })).toThrow(/CONTEXT_RECENT_TOKENS/);
     // recent + archive must fit under the compaction threshold, or compaction could never get below it
     expect(() => loadConfig({ CONTEXT_COMPACT_TOKENS: "30000" })).toThrow(/CONTEXT_COMPACT_TOKENS.*larger than/);
+  });
+});
+
+describe("wake-up settings", () => {
+  it("default to 30s for chatter and 2s once addressed, and are read in seconds", () => {
+    expect(loadConfig({}).wake).toEqual({ chatMeanMs: 30_000, addressedMeanMs: 2_000 });
+    expect(loadConfig({ WAKE_CHAT_MEAN_SECONDS: "1.5", WAKE_ADDRESSED_MEAN_SECONDS: "0" }).wake).toEqual({ chatMeanMs: 1_500, addressedMeanMs: 0 });
+  });
+
+  it("rejects negative or non-numeric values", () => {
+    expect(() => loadConfig({ WAKE_CHAT_MEAN_SECONDS: "-1" })).toThrow(/WAKE_CHAT_MEAN_SECONDS/);
+    expect(() => loadConfig({ WAKE_ADDRESSED_MEAN_SECONDS: "soon" })).toThrow(/WAKE_ADDRESSED_MEAN_SECONDS/);
   });
 });

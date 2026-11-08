@@ -5,7 +5,12 @@ import { openDb } from "./db/open.js";
 
 const { config, logger } = bootstrap();
 const db = openDb(config.dbPath); // one SQLite file holds every piece of state
-const conversation = await orExit(logger, () => createPiConversationFactory(db, config, logger))("cli");
+// The CLI has no group: `send` prints what the agent would post.
+const conversation = await orExit(logger, () =>
+  createPiConversationFactory(db, config, logger, async (_groupId, text) => {
+    process.stdout.write(`\n[send] ${text}\n`);
+  }),
+)("cli");
 
 conversation.session.subscribe((event) => {
   if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
@@ -26,7 +31,7 @@ for await (const raw of rl) {
   if (line === "exit" || line === "quit") break;
   if (line) {
     try {
-      await conversation.ask(line); // the reply was already streamed above
+      await conversation.ask(line); // text is streamed above; `send` prints its message
     } catch (err) {
       logger.error(err instanceof Error ? err.message : String(err));
     }
