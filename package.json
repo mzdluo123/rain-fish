@@ -10,9 +10,9 @@
   },
   "type": "module",
   "dependencies": {
-    "@mariozechner/pi-agent-core": "0.73.1",
-    "@mariozechner/pi-ai": "0.73.1",
-    "@mariozechner/pi-coding-agent": "^0.73.1",
+    "@earendil-works/pi-agent-core": "1.5.0",
+    "@earendil-works/pi-ai": "1.5.0",
+    "@earendil-works/pi-coding-agent": "^1.5.0",
     "@oh-my-pi/snapcompact": "^18.18.1",
     "consola": "^3.4.2",
     "typebox": "^1.4.6",

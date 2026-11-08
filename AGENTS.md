@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Bun + TypeScript. Pi-based (`@mariozechner/pi-coding-agent`) assistant that reads/writes files in a virtual filesystem stored in SQLite and can never execute code. All bot state lives in one SQLite file.
+Bun + TypeScript. Pi-based (`@earendil-works/pi-coding-agent`) assistant that reads/writes files in a virtual filesystem stored in SQLite and can never execute code. All bot state lives in one SQLite file.
 
 ## Commands
 - `bun install`
@@ -11,7 +11,7 @@ Bun + TypeScript. Pi-based (`@mariozechner/pi-coding-agent`) assistant that read
 ## Layout
 - `src/vfs.ts` — `VirtualFs`: a POSIX-like filesystem in ONE table (`files`, migration 0003). No host disk is involved, so there is nothing to escape: paths resolve against `/`, no symlinks. Size quotas (`VfsLimits`) stop the agent from filling the DB. `src/vfs-ops.ts` plugs it into Pi's read/write/edit/ls; `src/tools/vfs-search.ts` has our own `find`/`grep` (Pi's built-ins shell out to `fd`/`rg` on the host disk). `src/vfs-io.ts` + `src/fs-cli.ts` (`bun run fs ...`) import/export between host dirs and the DB.
 - `src/conversation.ts` — `PiConversation`: persistent per-group conversation with the two context levels (`src/context/`: `estimate.ts`, `prune.ts` = level 1 pure view transform, `archive.ts` = level 2 snapcompact wrapper); `src/conversation-store.ts` persists it; `src/conversation-factory.ts` wires model + fs + store + conversation; `src/model.ts` resolves `MODEL`.
-- `src/agent.ts` — `createAgent({systemPrompt, fs, store, model?, modelRegistry?})`: tool allowlist, disabled extensions/skills/context files, in-memory session, system prompt = the text passed in `AgentDeps.systemPrompt`.
+- `src/agent.ts` — `createAgent({systemPrompt, fs, store, model?, modelRuntime?, thinkingLevel?})`: tool allowlist, disabled extensions/skills/context files, in-memory session, system prompt = the text passed in `AgentDeps.systemPrompt`.
 - `src/index.ts` — CLI REPL.
 - `src/store.ts` — `MessageStore(db)` (insert idempotent per platform+group+message id; FTS5 + BM25 `search`). `src/db/open.ts` `openDb(path)` opens the single SQLite file (WAL, migrations) shared by everything.
 - `src/db/` — `migrate.ts` (forward-only migrator, `schema_migrations` table, per-migration `BEGIN IMMEDIATE`), `migrations/` (append-only list in `index.ts`), `tokenize.ts` (`Intl.Segmenter` word split; FTS5 index stores space-joined tokens).
@@ -65,5 +65,5 @@ Bun + TypeScript. Pi-based (`@mariozechner/pi-coding-agent`) assistant that read
 - Our `grep` runs the agent's regex in-process; a pathological regex can stall the event loop (lines are cut to 500 chars, which bounds but does not remove the risk).
 - All state goes in the one SQLite file (messages, files, conversations, the pending-message queue, per-group flags); add new state as a migration, not as another file. Anything the process keeps only in memory is lost on restart: before adding such state, decide whether a restart may forget it (timers and the `PiResponder` queue are rebuilt from `pending_messages` by `restore()`; Pi's own config/API keys stay in `~/.pi/agent`).
 - `ToolDefinition` generics are invariant, hence the `as unknown as ToolDefinition[]` cast in `agent.ts`.
-- The Pi packages under `@mariozechner/*` are deprecated in favour of `@earendil-works/*`; migrating is a separate change.
+- Pi is `@earendil-works/*` (1.x). Model/credential access is the async `ModelRuntime` (`src/model.ts`); `createPiConversationFactory` is therefore async and `orExit` awaits promises. `THINKING_LEVEL` (off..max) is passed to `createAgentSession`.
 - Pi sessions are in-memory (`SessionManager.inMemory`); the conversation is restored from `agent_messages`/`agent_archives` by `PiConversation.create`, so nothing Pi-side needs to persist.

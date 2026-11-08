@@ -1,4 +1,4 @@
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { isArchiveMessage } from "./archive.js";
 import { estimateMessageTokens, estimateTextTokens } from "./estimate.js";
 

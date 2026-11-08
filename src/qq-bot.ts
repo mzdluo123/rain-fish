@@ -15,8 +15,11 @@ const store = new MessageStore(db);
 // The client and the bot reference each other: the client delivers messages, the bot sends through it.
 // The agent's `send` tool posts via the bot; the responder wakes the agent for batches of queued messages.
 let bot: Bot;
+const makeConversation = await orExit(logger, () =>
+  createPiConversationFactory(db, config, logger, (groupId, text, replyTo) => bot.sendText(groupId, text, replyTo), events),
+);
 const responder = new PiResponder(
-  orExit(logger, () => createPiConversationFactory(db, config, logger, (groupId, text, replyTo) => bot.sendText(groupId, text, replyTo), events)),
+  makeConversation,
   { wake: config.wake, pending: new PendingStore(db), logger, events },
 );
 let backfilled = false;

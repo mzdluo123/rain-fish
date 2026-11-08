@@ -1,8 +1,7 @@
-import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
-import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@mariozechner/pi-ai";
+import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "bun:test";
 import { createAgent } from "../src/agent.js";
-import { makeEnv } from "./helpers.js";
+import { makeEnv, testModelRuntime } from "./helpers.js";
 
 async function sendTool(env: ReturnType<typeof makeEnv>) {
   const { session } = await createAgent(env);
@@ -37,11 +36,11 @@ describe("send tool", () => {
 
 describe("send ends the run", () => {
   it("the model is not called again after a successful send, and the next prompt still works", async () => {
-    const faux = registerFauxProvider();
-    const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
-    registry.registerProvider(faux.models[0].provider, { baseUrl: "http://faux", apiKey: "k", api: faux.api, models: [] });
+    const faux = fauxProvider();
+    const runtime = await testModelRuntime();
+    runtime.registerNativeProvider(faux.provider);
     const env = makeEnv();
-    const { session } = await createAgent({ ...env, model: faux.getModel(), modelRegistry: registry });
+    const { session } = await createAgent({ ...env, model: faux.getModel(), modelRuntime: runtime });
 
     faux.setResponses([
       fauxAssistantMessage(fauxToolCall("send", { text: "你好呀", reply_to: "7" }), { stopReason: "toolUse" }),
@@ -56,6 +55,5 @@ describe("send ends the run", () => {
     await session.prompt("[t · #8] Bob(43):\n闲聊");
     expect(faux.state.callCount).toBe(2);
     expect(env.sent).toHaveLength(1);
-    faux.unregister();
   });
 });

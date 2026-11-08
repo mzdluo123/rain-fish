@@ -10,7 +10,7 @@ import {
   SettingsManager,
   type AgentSession,
   type ToolDefinition,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import { createSearchMessagesTool, SEARCH_TOOL } from "./tools/search-messages.js";
 import { createSendTool, SEND_TOOL } from "./tools/send.js";
 import { createVfsFindTool, createVfsGrepTool } from "./tools/vfs-search.js";
@@ -23,7 +23,7 @@ export const ALLOWED_TOOLS = ["read", "write", "edit", "ls", "find", "grep", SEA
 /** The agent's working directory is the root of its virtual filesystem. */
 const VFS_ROOT = "/";
 
-export async function createAgent({ systemPrompt, fs, store, groupId, send, model, modelRegistry }: AgentDeps): Promise<{ session: AgentSession }> {
+export async function createAgent({ systemPrompt, fs, store, groupId, send, model, modelRuntime, thinkingLevel }: AgentDeps): Promise<{ session: AgentSession }> {
   const ops = createVfsOperations(fs);
 
   // Disable everything that could smuggle in extra tools or instructions
@@ -50,7 +50,8 @@ export async function createAgent({ systemPrompt, fs, store, groupId, send, mode
     resourceLoader,
     settingsManager,
     ...(model ? { model } : {}), // omitted: Pi picks its configured default
-    ...(modelRegistry ? { modelRegistry } : {}),
+    ...(modelRuntime ? { modelRuntime } : {}),
+    ...(thinkingLevel ? { thinkingLevel } : {}), // omitted: Pi's default
     sessionManager: SessionManager.inMemory(VFS_ROOT),
     // Allowlist: built-in `bash` is never enabled.
     tools: allowed,

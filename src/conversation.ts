@@ -1,5 +1,5 @@
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { AgentSession } from "@mariozechner/pi-coding-agent";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { buildArchiveMessage, extendArchiveSource, serializeForArchive, type ArchiveBudget } from "./context/archive.js";
 import { estimateContextTokens, estimateMessageTokens, estimateTextTokens } from "./context/estimate.js";
 import { MEMORY_FLUSH_PROMPT } from "./context/memory.js";

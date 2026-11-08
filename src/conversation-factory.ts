@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { createAgent } from "./agent.js";
 import { PiConversation } from "./conversation.js";
 import { ConversationStore } from "./conversation-store.js";
-import { createModelRegistry, resolveModel } from "./model.js";
+import { createModelRuntime, resolveModel } from "./model.js";
 import { MessageStore } from "./store.js";
 import { noopEventLog } from "./trace/event-log.js";
 import type { Config, EventLog, GroupSender, Logger } from "./types.js";
@@ -26,11 +26,11 @@ export function loadSystemPrompt(file: string): string {
   return text;
 }
 
-export function createPiConversationFactory(db: Database, config: Config, logger: Logger, send: GroupSender, events: EventLog = noopEventLog) {
+export async function createPiConversationFactory(db: Database, config: Config, logger: Logger, send: GroupSender, events: EventLog = noopEventLog) {
   loadSystemPrompt(config.promptFile); // fail at startup, not on the first message
-  const registry = createModelRegistry();
-  const model = config.model ? resolveModel(registry, config.model) : undefined;
-  if (model && !registry.hasConfiguredAuth(model)) {
+  const runtime = await createModelRuntime();
+  const model = config.model ? resolveModel(runtime, config.model) : undefined;
+  if (model && !runtime.hasConfiguredAuth(model.provider)) {
     logger.warn(`no credentials for provider "${model.provider}": replies will fail until an API key is configured (see .env.example)`);
   }
   logger.info(`prompt ${config.promptFile} · model ${config.model ?? "(Pi default)"} · context: prune >${config.context.pruneMinTokens}t outside ${config.context.recentTokens}t recent, snap-compact at ${config.context.compactTokens}t`);
@@ -49,7 +49,8 @@ export function createPiConversationFactory(db: Database, config: Config, logger
       groupId,
       send: (text, replyTo) => send(groupId, text, replyTo),
       model,
-      modelRegistry: registry,
+      modelRuntime: runtime,
+      thinkingLevel: config.thinkingLevel,
     });
     session.subscribe((event) => {
       if (event.type === "tool_execution_start") toolLog.debug(`${event.toolName} ${JSON.stringify(event.args)}`);

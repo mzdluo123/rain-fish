@@ -38,6 +38,8 @@ export const configSchema = z
       .string()
       .regex(/^[^/\s]+\/\S+$/, "must look like provider/model-id")
       .optional(),
+    /** Thinking effort: `off` disables thinking. Unset: Pi's default (medium, clamped to what the model supports). */
+    THINKING_LEVEL: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).optional(),
     // --- context management (tokens) ---
     /** Newest history that is never touched: protected from level-1 pruning, kept verbatim by level-2 compaction. */
     CONTEXT_RECENT_TOKENS: z.coerce.number().int().positive().default(12_000),
@@ -81,6 +83,7 @@ export const configSchema = z
     dbPath: e.DB_PATH,
     logLevel: e.LOG_LEVEL,
     model: e.MODEL,
+    thinkingLevel: e.THINKING_LEVEL,
     context: {
       recentTokens: e.CONTEXT_RECENT_TOKENS,
       pruneMinTokens: e.CONTEXT_PRUNE_MIN_TOKENS,

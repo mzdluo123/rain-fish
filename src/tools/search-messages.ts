@@ -1,4 +1,4 @@
-import { defineTool } from "@mariozechner/pi-coding-agent";
+import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { MAX_SEARCH_LIMIT, type MessageStore } from "../store.js";
 import { escapeText } from "../xml.js";

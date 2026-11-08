@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { isArchiveMessage } from "../src/context/archive.js";
 import { PiConversation } from "../src/conversation.js";
 import { ConversationStore } from "../src/conversation-store.js";

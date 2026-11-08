@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { StoredAgentMessage, StoredArchive } from "./types.js";
 
 /** Persists agent conversations (live messages + the compacted archive) in the shared SQLite file. */

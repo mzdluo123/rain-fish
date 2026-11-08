@@ -20,12 +20,17 @@ export function bootstrap(): { config: Config; logger: Logger; events: EventLog 
   }
 }
 
-/** Runs startup work that can fail on bad configuration (unknown model, ...): logs the reason and exits instead of dumping a stack trace. */
+/** Runs startup work (sync or async) that can fail on bad configuration (unknown model, ...): logs the reason and exits instead of dumping a stack trace. */
 export function orExit<T>(logger: Logger, work: () => T): T {
-  try {
-    return work();
-  } catch (err) {
+  const fail = (err: unknown): never => {
     logger.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
+  };
+  try {
+    const result = work();
+    return result instanceof Promise ? (result.catch(fail) as T) : result;
+  } catch (err) {
+    return fail(err);
   }
 }
+

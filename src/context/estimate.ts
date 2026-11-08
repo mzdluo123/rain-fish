@@ -1,4 +1,4 @@
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
 /** Rough cost of one image block (archive frames are ~2.9-3.0k on the major providers). */
 export const IMAGE_TOKENS = 3000;

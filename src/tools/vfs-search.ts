@@ -1,4 +1,4 @@
-import { defineTool, DEFAULT_MAX_BYTES, formatSize } from "@mariozechner/pi-coding-agent";
+import { defineTool, DEFAULT_MAX_BYTES, formatSize } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { relativeTo, VirtualFs } from "../vfs.js";
 

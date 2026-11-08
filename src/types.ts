@@ -4,15 +4,15 @@
  * anything that crosses the WebSocket); everything else is declared here directly.
  */
 import type { Database } from "bun:sqlite";
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { Model } from "@mariozechner/pi-ai";
+import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { Model } from "@earendil-works/pi-ai";
 import type {
   EditOperations,
-  ModelRegistry,
+  ModelRuntime,
   LsOperations,
   ReadOperations,
   WriteOperations,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import type { z } from "zod";
 import type {
   apiResponseSchema,
@@ -124,8 +124,10 @@ export interface AgentDeps {
   systemPrompt: string;
   /** Model to use; omit for Pi's configured default. */
   model?: Model<any>;
-  /** Registry the model came from (credentials lookup); omit to let Pi build its default. */
-  modelRegistry?: ModelRegistry;
+  /** Thinking effort; omit for Pi's default (settings, else medium, clamped to what the model supports). */
+  thinkingLevel?: ThinkingLevel;
+  /** Runtime the model came from (credentials lookup); omit to let Pi build its default. */
+  modelRuntime?: ModelRuntime;
   /** The agent's whole filesystem (in the same SQLite file as everything else). */
   fs: VirtualFs;
   /** Read-only search of this group's history is exposed to the agent as `search_messages`. */

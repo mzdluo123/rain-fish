@@ -6,11 +6,12 @@ import { openDb } from "./db/open.js";
 const { config, logger, events } = bootstrap();
 const db = openDb(config.dbPath); // one SQLite file holds every piece of state
 // The CLI has no group: `send` prints what the agent would post.
-const conversation = await orExit(logger, () =>
+const makeConversation = await orExit(logger, () =>
   createPiConversationFactory(db, config, logger, async (_groupId, text) => {
     process.stdout.write(`\n[send] ${text}\n`);
   }, events),
-)("cli");
+);
+const conversation = await makeConversation("cli");
 
 conversation.session.subscribe((event) => {
   if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {

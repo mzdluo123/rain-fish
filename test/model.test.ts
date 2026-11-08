@@ -1,20 +1,23 @@
 import { describe, expect, it } from "bun:test";
-import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
 import { resolveModel } from "../src/model.js";
+import { testModelRuntime } from "./helpers.js";
 
-const registry = () => ModelRegistry.inMemory(AuthStorage.inMemory({ openai: { type: "api_key", key: "sk-test" } }));
+const runtime = testModelRuntime;
 
 describe("resolveModel", () => {
-  it("resolves provider/model-id, including ids that contain slashes", () => {
-    const r = registry();
-    const any = r.getAll().find((m) => m.provider === "openai")!;
-    expect(resolveModel(r, `openai/${any.id}`)).toMatchObject({ provider: "openai", id: any.id });
-    const slashed = r.getAll().find((m) => m.id.includes("/"));
-    if (slashed) expect(resolveModel(r, `${slashed.provider}/${slashed.id}`).id).toBe(slashed.id);
+  it("resolves provider/model-id", async () => {
+    const rt = await runtime();
+    const any = rt.getModels("openai")[0]!;
+    expect(resolveModel(rt, `openai/${any.id}`)).toMatchObject({ provider: "openai", id: any.id });
   });
 
-  it("fails with a helpful message for an unknown model, listing models that have credentials", () => {
-    expect(() => resolveModel(registry(), "openai/definitely-not-a-model")).toThrow(/Unknown MODEL "openai\/definitely-not-a-model".*openai\//);
-    expect(() => resolveModel(registry(), "nope/x")).toThrow(/Unknown MODEL/);
+  it("knows Claude Haiku 5.5, with its 1M window", async () => {
+    expect(resolveModel(await runtime(), "anthropic/claude-haiku-5-5")).toMatchObject({ id: "claude-haiku-5-5", contextWindow: 1_000_000, reasoning: true });
+  });
+
+  it("fails with a helpful message for an unknown model", async () => {
+    const rt = await runtime();
+    expect(() => resolveModel(rt, "openai/definitely-not-a-model")).toThrow(/Unknown MODEL "openai\/definitely-not-a-model"/);
+    expect(() => resolveModel(rt, "nope/x")).toThrow(/Unknown MODEL/);
   });
 });

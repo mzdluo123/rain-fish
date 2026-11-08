@@ -3,7 +3,7 @@ import { loadConfig } from "../src/config.js";
 
 describe("loadConfig", () => {
   it("has working defaults", () => {
-    expect(loadConfig({})).toEqual({ wsUrl: "ws://127.0.0.1:3001", token: undefined, groups: undefined, promptFile: "prompts/agent.md", dbPath: "data/bot.db", logLevel: "info", model: undefined, context: { recentTokens: 12_000, pruneMinTokens: 800, compactTokens: 60_000, archiveTokens: 20_000, flushRatio: 0.85 }, wake: { chatMeanMs: 30_000, addressedMeanMs: 2_000 }, backfill: { minMessages: 100, maxAgeSeconds: 5 * 86_400 }, trace: { enabled: true, dir: "data/logs", maxFileBytes: 20 * 1024 * 1024, maxFiles: 30, maxAgeDays: 14, compress: true, content: false } });
+    expect(loadConfig({})).toEqual({ wsUrl: "ws://127.0.0.1:3001", token: undefined, groups: undefined, promptFile: "prompts/agent.md", dbPath: "data/bot.db", logLevel: "info", model: undefined, thinkingLevel: undefined, context: { recentTokens: 12_000, pruneMinTokens: 800, compactTokens: 60_000, archiveTokens: 20_000, flushRatio: 0.85 }, wake: { chatMeanMs: 30_000, addressedMeanMs: 2_000 }, backfill: { minMessages: 100, maxAgeSeconds: 5 * 86_400 }, trace: { enabled: true, dir: "data/logs", maxFileBytes: 20 * 1024 * 1024, maxFiles: 30, maxAgeDays: 14, compress: true, content: false } });
   });
 
   it("treats empty values (KEY= in .env) as unset, so defaults apply", () => {
@@ -81,5 +81,13 @@ describe("trace settings", () => {
     expect(() => loadConfig({ TRACE_MAX_FILES: "0" })).toThrow(/TRACE_MAX_FILES/);
     expect(() => loadConfig({ TRACE_MAX_AGE_DAYS: "-1" })).toThrow(/TRACE_MAX_AGE_DAYS/);
     expect(() => loadConfig({ TRACE_MAX_FILE_MB: "0" })).toThrow(/TRACE_MAX_FILE_MB/);
+  });
+});
+
+describe("THINKING_LEVEL", () => {
+  it("accepts the Pi thinking levels and rejects anything else", () => {
+    expect(loadConfig({ THINKING_LEVEL: "xhigh" }).thinkingLevel).toBe("xhigh");
+    expect(loadConfig({ THINKING_LEVEL: "off" }).thinkingLevel).toBe("off");
+    expect(() => loadConfig({ THINKING_LEVEL: "ultra" })).toThrow(/THINKING_LEVEL/);
   });
 });

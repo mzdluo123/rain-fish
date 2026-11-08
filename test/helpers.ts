@@ -1,4 +1,8 @@
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import type { Logger } from "../src/types.js";
 import { openDb } from "../src/db/open.js";
 import { MessageStore } from "../src/store.js";
@@ -53,7 +57,7 @@ const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0
 const assistantBase = { api: "openai-responses", provider: "openai", model: "gpt-5.5", usage } as const;
 export const assistantText = (text: string): AgentMessage => ({ role: "assistant", ...assistantBase, content: [{ type: "text", text }], stopReason: "stop", timestamp: ++clock });
 export const assistantCall = (id: string, name: string, args: Record<string, unknown>): AgentMessage => ({
-  role: "assistant", ...assistantBase, content: [{ type: "toolCall", id, name, arguments: args }], stopReason: "toolUse", timestamp: ++clock,
+  role: "assistant", ...assistantBase, content: [{ type: "toolCall", id, name, arguments: args as never }], stopReason: "toolUse", timestamp: ++clock,
 });
 export const assistantError = (errorMessage: string): AgentMessage => ({ role: "assistant", ...assistantBase, content: [], stopReason: "error", errorMessage, timestamp: ++clock });
 export const toolResultMsg = (id: string, name: string, text: string): AgentMessage => ({
@@ -77,3 +81,7 @@ export function memoryEventLog(opts: { captureContent?: boolean } = {}) {
     names: (...evs: string[]) => all().filter((r) => evs.length === 0 || evs.includes(r.ev)).map((r) => r.ev as string),
   };
 }
+
+/** Built-in model catalog only: no `models.json`, no network, empty credential file in a temp dir (never the real ~/.pi/agent). */
+export const testModelRuntime = (): Promise<ModelRuntime> =>
+  ModelRuntime.create({ modelsPath: null, authPath: path.join(mkdtempSync(path.join(tmpdir(), "rainfish-auth-")), "auth.json"), refreshOnCreate: false });
