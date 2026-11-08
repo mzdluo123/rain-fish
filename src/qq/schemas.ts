@@ -48,6 +48,8 @@ export const segmentSchema = z.union([
 export const outboundSegmentSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("text"), data: z.object({ text: z.string().min(1) }) }),
   z.object({ type: z.literal("reply"), data: z.object({ id: z.string().regex(/^-?\d+$/) }) }),
+  // A stored picture, inline as base64 (never a URL or a host path). ~8 MiB of picture at most.
+  z.object({ type: z.literal("image"), data: z.object({ file: z.string().startsWith("base64://").max(11_500_000) }) }),
 ]);
 
 // ---- CQ-code string format -------------------------------------------------------

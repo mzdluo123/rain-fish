@@ -21,6 +21,8 @@ import type {
   segmentSchema,
 } from "./qq/schemas.js";
 import type { configSchema } from "./config.js";
+import type { ImageStore } from "./image-store.js";
+import type { RunBudget } from "./run-budget.js";
 import type { MessageStore } from "./store.js";
 import type { VirtualFs } from "./vfs.js";
 
@@ -48,6 +50,8 @@ export interface SearchQuery {
   until?: number;
   /** Default 10, capped at MAX_SEARCH_LIMIT. */
   limit?: number;
+  /** Only messages that carried a stored picture. */
+  withImages?: boolean;
 }
 
 export interface SearchHit extends StoredMessage {
@@ -136,6 +140,12 @@ export interface AgentDeps {
   groupId: string;
   /** Posts to this conversation's group; backs the agent's `send` tool. `replyTo` is a message id to quote. Rejects if delivery fails. */
   send: SendFn;
+  /** Posts a stored picture to this conversation's group; backs `send_image`. Rejects if the group never saw that picture or delivery fails. */
+  sendImage: SendImageFn;
+  /** Stored pictures (scoped to `groupId` on every read); backs `view_image` and the picture ids in `search_messages`. */
+  images: ImageStore;
+  /** Caps and paces what the agent posts in one run; reset by the conversation at the start of each run. */
+  budget: RunBudget;
 }
 
 // ---- QQ wire types (validated at the WebSocket edge, derived from schemas) --------
@@ -195,6 +205,28 @@ export interface ImageSource {
   load(url: string): Promise<ImageContent | undefined>;
 }
 
+/** A picture kept in the database. */
+export interface StoredImage {
+  id: number;
+  mime: string;
+  size: number;
+  data: Buffer;
+}
+
+/** A picture of a message, stored: its id and the content to show the model. */
+export interface StoredPicture {
+  id: number;
+  image: ImageContent;
+}
+
+/**
+ * Downloads and keeps the pictures of group messages. `capture` is idempotent per message (concurrent and repeated calls share one
+ * download) and never throws: per picture of the message, the stored picture or `undefined` if it could not be had.
+ */
+export interface PictureArchive {
+  capture(msg: GroupMessage): Promise<(StoredPicture | undefined)[]>;
+}
+
 /** An image of a group message: where QQ serves it. The URL expires, so it is only good for a short while. */
 export interface ImageRef {
   url: string;
@@ -247,6 +279,10 @@ export type BackfillConfig = Config["backfill"];
 export type GroupSender = (groupId: string, text: string, replyTo?: string) => Promise<void>;
 /** `GroupSender` bound to one group. */
 export type SendFn = (text: string, replyTo?: string) => Promise<void>;
+/** Posts the stored picture `imageId` (with optional `text` in the same message) to a group. Rejects if the group never saw it. */
+export type GroupImageSender = (groupId: string, imageId: number, text?: string, replyTo?: string) => Promise<void>;
+/** `GroupImageSender` bound to one group. */
+export type SendImageFn = (imageId: number, text?: string, replyTo?: string) => Promise<void>;
 
 /**
  * Receives the messages the agent should eventually see. It does not answer: the agent speaks
@@ -261,6 +297,10 @@ export type WakeConfig = Config["wake"];
 
 export interface BotOptions {
   store: MessageStore;
+  /** Stored pictures: needed to send them (`sendImage`). */
+  images?: ImageStore;
+  /** Picture capture on arrival: every picture of an incoming message is downloaded and stored in the background. */
+  pictures?: PictureArchive;
   responder: GroupResponder;
   api: QQApi;
   /** Only handle these group ids; omit for all groups. */

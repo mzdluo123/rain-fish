@@ -7,7 +7,9 @@ import { ConversationStore } from "./conversation-store.js";
 import { createModelRuntime, resolveModel } from "./model.js";
 import { MessageStore } from "./store.js";
 import { noopEventLog } from "./trace/event-log.js";
-import type { Config, EventLog, GroupSender, Logger } from "./types.js";
+import type { Config, EventLog, GroupImageSender, GroupSender, Logger } from "./types.js";
+import { ImageStore } from "./image-store.js";
+import { RunBudget } from "./run-budget.js";
 import { VirtualFs } from "./vfs.js";
 
 /**
@@ -42,7 +44,7 @@ function logLlmCall(log: Logger, groupId: string, m: AssistantMessage, ms: numbe
   if (text) log.debug(`group ${groupId}: text: ${text.length > 300 ? `${text.slice(0, 300)}…` : text}`);
 }
 
-export async function createPiConversationFactory(db: Database, config: Config, logger: Logger, send: GroupSender, events: EventLog = noopEventLog) {
+export async function createPiConversationFactory(db: Database, config: Config, logger: Logger, send: GroupSender, sendImage: GroupImageSender, events: EventLog = noopEventLog) {
   loadSystemPrompt(config.promptFile); // fail at startup, not on the first message
   const runtime = await createModelRuntime();
   const model = config.model ? resolveModel(runtime, config.model) : undefined;
@@ -53,23 +55,28 @@ export async function createPiConversationFactory(db: Database, config: Config, 
 
   const fs = new VirtualFs(db);
   const store = new MessageStore(db);
+  const images = new ImageStore(db);
   const conversations = new ConversationStore(db);
   const toolLog = logger.withTag("tool");
   const llmLog = logger.withTag("llm");
 
   return async (groupId: string): Promise<PiConversation> => {
     // Re-read per conversation: an edit applies to groups whose conversation starts after it.
+    const budget = new RunBudget(config.send.maxPerRun, config.send.gapMs);
     const { session } = await createAgent({
       systemPrompt: loadSystemPrompt(config.promptFile),
       fs,
       store,
       groupId,
       send: (text, replyTo) => send(groupId, text, replyTo),
+      sendImage: (imageId, text, replyTo) => sendImage(groupId, imageId, text, replyTo),
+      images,
+      budget,
       model,
       modelRuntime: runtime,
       thinkingLevel: config.thinkingLevel,
     });
-    const conversation = await PiConversation.create({ groupId, session, store: conversations, context: config.context, logger, events });
+    const conversation = await PiConversation.create({ groupId, session, store: conversations, context: config.context, logger, events, budget });
     let llmStarted = Date.now();
     session.subscribe((event) => {
       if (event.type === "tool_execution_start") toolLog.debug(`${event.toolName} ${JSON.stringify(event.args)}`);

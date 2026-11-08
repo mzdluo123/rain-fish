@@ -6,6 +6,8 @@ import path from "node:path";
 import type { Logger } from "../src/types.js";
 import { openDb } from "../src/db/open.js";
 import { MessageStore } from "../src/store.js";
+import { ImageStore } from "../src/image-store.js";
+import { RunBudget } from "../src/run-budget.js";
 import { VirtualFs } from "../src/vfs.js";
 import { JsonlEventLog } from "../src/trace/event-log.js";
 
@@ -19,7 +21,14 @@ export function makeEnv(systemPrompt = "# Persona\nYou are TESTBOT.", sendError?
     if (sendError) throw new Error(sendError);
     sent.push({ text, replyTo });
   };
-  return { db, fs, store, systemPrompt, groupId: "100", send, sent };
+  const sentImages: { imageId: number; text?: string; replyTo?: string }[] = [];
+  const sendImage = async (imageId: number, text?: string, replyTo?: string) => {
+    if (sendError) throw new Error(sendError);
+    sentImages.push({ imageId, text, replyTo });
+  };
+  const images = new ImageStore(db);
+  const budget = new RunBudget(6, 0);
+  return { db, fs, store, systemPrompt, groupId: "100", send, sent, sendImage, sentImages, images, budget };
 }
 
 export interface LogEntry {

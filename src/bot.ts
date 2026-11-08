@@ -56,6 +56,7 @@ export class Bot {
       this.events.emit("msg.in", { ...base, addressed: false, queued: false });
       return;
     }
+    if (msg.images?.length) void this.opts.pictures?.capture(msg); // in the background: downloading must not delay anything
     const addressed = this.isAddressedToBot(msg);
     this.events.emit("msg.in", { ...base, addressed, queued: true, text: preview(this.events, msg.text), nickname: this.events.captureContent ? msg.nickname : undefined });
     this.opts.responder.notify(msg, addressed);
@@ -86,6 +87,34 @@ export class Bot {
       }
     }
     this.log.success(`sent to group ${groupId} (${text.length} chars, ${chunks.length} message(s))`);
+  }
+
+  /**
+   * Posts the stored picture `imageId` (plus `text` in the same message), quoting `replyTo`. Only pictures this group has seen can be
+   * sent. The message is stored like `sendText`'s, linked to the picture so it can be found again.
+   */
+  async sendImage(groupId: string, imageId: number, text?: string, replyTo?: string): Promise<void> {
+    const img = this.opts.images?.get(groupId, imageId);
+    if (!img) throw new Error(`No picture i${imageId} in this group's history (unknown id, or deleted to make room).`);
+    const caption = text?.trim();
+    const segments: OutboundSegment[] = [{ type: "image", data: { file: `base64://${img.data.toString("base64")}` } }];
+    if (caption) segments.push({ type: "text", data: { text: caption } });
+    if (replyTo) segments.unshift({ type: "reply", data: { id: replyTo } });
+    let messageId: string;
+    try {
+      ({ messageId } = await this.opts.api.sendGroupMessage(groupId, segments));
+    } catch (err) {
+      this.events.emit("msg.out_failed", { group: groupId, chunk: 0, chunks: 1, chars: caption?.length ?? 0, image_id: imageId, error: err });
+      throw new Error(`send of picture i${imageId} to group ${groupId} failed: ${errText(err)}`);
+    }
+    this.events.emit("msg.out", { group: groupId, message_id: messageId, chunk: 0, chunks: 1, chars: caption?.length ?? 0, image_id: imageId, bytes: img.size, reply_to: replyTo, stored: this.selfId !== undefined, text: preview(this.events, caption ?? "") });
+    if (this.selfId) {
+      this.opts.store.insert({ platform: "qq", groupId, messageId, userId: this.selfId, nickname: "bot", ts: Math.floor(Date.now() / 1000), text: caption ? `[图片]${caption}` : "[图片]" });
+      this.opts.images?.link(groupId, messageId, 0, imageId);
+    } else {
+      this.log.warn(`own id unknown yet: message ${messageId} in group ${groupId} not stored`);
+    }
+    this.log.success(`sent picture i${imageId} to group ${groupId}`);
   }
 
   private isAddressedToBot(msg: GroupMessage): boolean {

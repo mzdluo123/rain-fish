@@ -130,3 +130,20 @@ describe("pruneExpensive batching (keeps the prompt-cache prefix stable)", () =>
     expect(state.through).toBeGreaterThan(0);
   });
 });
+
+describe("pruneExpensive: view_image results", () => {
+  const viewed = (id: string): AgentMessage => ({
+    role: "toolResult", toolCallId: id, toolName: "view_image", isError: false, timestamp: 1,
+    content: [{ type: "text", text: "Picture i1:" }, { type: "image", data: "AAAA", mimeType: "image/png" }],
+  });
+
+  it("clears the picture of an earlier turn but keeps the one of the turn in progress", () => {
+    const older = [userMsg("看图"), assistantCall("c1", "view_image", { image_id: "i1" }), viewed("c1"), assistantText("嗯"), userMsg(tokensOf(100)), assistantText(tokensOf(100))];
+    const out = pruneExpensive(older, { recentTokens: 150, minBlockTokens: 100_000 });
+    expect(text(out[2])).toContain("已清理：图片");
+    expect(text(out[2])).toContain("Picture i1:");
+
+    const live = [userMsg("看图"), assistantCall("c1", "view_image", { image_id: "i1" }), viewed("c1")];
+    expect(text(pruneExpensive(live, { recentTokens: 1, minBlockTokens: 100_000 })[2])).toContain('"type":"image"');
+  });
+});

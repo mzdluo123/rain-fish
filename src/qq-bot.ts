@@ -6,6 +6,8 @@ import { openDb } from "./db/open.js";
 import { PendingStore } from "./pending-store.js";
 import { OneBotClient } from "./qq/client.js";
 import { createImageSource } from "./images.js";
+import { ImageStore } from "./image-store.js";
+import { createPictureArchive } from "./picture-archive.js";
 import { PiResponder } from "./responder.js";
 import { SpeakStore } from "./speak-store.js";
 import { MessageStore } from "./store.js";
@@ -17,12 +19,16 @@ const store = new MessageStore(db);
 // The client and the bot reference each other: the client delivers messages, the bot sends through it.
 // The agent's `send` tool posts via the bot; the responder wakes the agent for batches of queued messages.
 let bot: Bot;
+const imageStore = new ImageStore(db);
+const imageSource = config.images.maxBytes > 0 && config.images.maxPerRun > 0 ? createImageSource({ ...config.images, logger }) : undefined;
+// Pictures are kept as they arrive (so they outlive QQ's URLs); with IMAGE_STORE_MAX_BYTES=0 only the wake-up download remains.
+const pictures = config.images.maxBytes > 0 && config.images.storeMaxBytes > 0 ? createPictureArchive({ source: imageSource ?? createImageSource({ ...config.images, maxPerRun: 1, logger }), store: imageStore, maxBytes: config.images.storeMaxBytes, logger }) : undefined;
 const makeConversation = await orExit(logger, () =>
-  createPiConversationFactory(db, config, logger, (groupId, text, replyTo) => bot.sendText(groupId, text, replyTo), events),
+  createPiConversationFactory(db, config, logger, (groupId, text, replyTo) => bot.sendText(groupId, text, replyTo), (groupId, imageId, text, replyTo) => bot.sendImage(groupId, imageId, text, replyTo), events),
 );
 const responder = new PiResponder(
   makeConversation,
-  { wake: config.wake, speakEveryRuns: config.speakEveryRuns, speakStore: new SpeakStore(db), pending: new PendingStore(db), images: config.images.maxBytes > 0 && config.images.maxPerRun > 0 ? createImageSource({ ...config.images, logger }) : undefined, logger, events },
+  { wake: config.wake, speakEveryRuns: config.speakEveryRuns, speakStore: new SpeakStore(db), pending: new PendingStore(db), images: imageSource, pictures, logger, events },
 );
 let backfilled = false;
 const client = new OneBotClient({
@@ -42,7 +48,7 @@ const client = new OneBotClient({
   },
   logger,
 });
-bot = new Bot({ store, responder, api: client, groups: config.groups, logger, events });
+bot = new Bot({ store, images: imageStore, pictures, responder, api: client, groups: config.groups, logger, events });
 
 events.emit("proc.start", {
   entry: "bot",

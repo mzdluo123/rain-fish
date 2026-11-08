@@ -70,6 +70,13 @@ export const configSchema = z
     IMAGE_MAX_BYTES: z.coerce.number().int().nonnegative().default(3 * 1024 * 1024),
     /** At most this many images (the newest) are attached to one wake-up; the rest stay placeholders. */
     IMAGE_MAX_PER_RUN: z.coerce.number().int().nonnegative().default(4),
+    /** Pictures of incoming messages are downloaded and kept (so the agent can look at and re-send them later) up to this many bytes in total; the least recently used go first. 0 = pictures are not kept. */
+    IMAGE_STORE_MAX_BYTES: z.coerce.number().int().nonnegative().default(200 * 1024 * 1024),
+    // --- what the agent posts in one run ---
+    /** Messages (`send` + `send_image`) the agent may post in one run; more are refused until the next wake-up. */
+    SEND_MAX_PER_RUN: z.coerce.number().int().positive().default(6),
+    /** Pause before the second and later message of a run, ms (looks less robotic, stays under QQ's rate limits). */
+    SEND_GAP_MS: z.coerce.number().int().nonnegative().default(800),
     // --- execution trace (structured, rotating event log) ---
     TRACE_ENABLED: flag(true),
     /** Directory of the trace files (`agent.jsonl` + rotated `agent.<time>.jsonl.gz`). */
@@ -109,6 +116,11 @@ export const configSchema = z
     images: {
       maxBytes: e.IMAGE_MAX_BYTES,
       maxPerRun: e.IMAGE_MAX_PER_RUN,
+      storeMaxBytes: e.IMAGE_STORE_MAX_BYTES,
+    },
+    send: {
+      maxPerRun: e.SEND_MAX_PER_RUN,
+      gapMs: e.SEND_GAP_MS,
     },
     backfill: {
       minMessages: e.BACKFILL_MIN_MESSAGES,

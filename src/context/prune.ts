@@ -76,6 +76,10 @@ function clearBlocks(m: AgentMessage, min: number, clearImages: boolean): AgentM
     // A picture is billed every request (~3k tokens). Once it is out of the recent window the model keeps the sender's text only.
     return { ...m, content: m.content.map((c) => (c.type === "image" ? { type: "text" as const, text: "[已清理：图片]" } : c)) };
   }
+  if (clearImages && m.role === "toolResult" && m.content.some((c) => c.type === "image")) {
+    // `view_image` results: the same ~3k tokens per request as a chat picture, cleared the same way once its turn is over.
+    return { ...m, content: m.content.map((c) => (c.type === "image" ? { type: "text" as const, text: "[已清理：图片]" } : c)) };
+  }
   if (m.role === "toolResult") {
     const tokens = estimateMessageTokens(m);
     if (tokens < min) return m;

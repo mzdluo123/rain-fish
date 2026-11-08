@@ -8,7 +8,8 @@ import { SEND_NUDGE_PROMPT, SPEAK_NUDGE_PROMPT } from "./context/nudge.js";
 import { pruneExpensive, type PruneState } from "./context/prune.js";
 import type { ConversationStore } from "./conversation-store.js";
 import { noopLogger } from "./logger.js";
-import { SEND_TOOL } from "./tools/send.js";
+import { SPEAK_TOOLS } from "./tools/send.js";
+import type { RunBudget } from "./run-budget.js";
 import { noopEventLog, preview } from "./trace/event-log.js";
 import { traceSession } from "./trace/session-events.js";
 import type { ContextConfig, Conversation, EventLog, Logger } from "./types.js";
@@ -20,6 +21,8 @@ export interface PiConversationDeps {
   context: ContextConfig;
   logger?: Logger;
   events?: EventLog;
+  /** Caps the messages posted per run; reset at the start of every run and reminder turn. */
+  budget?: RunBudget;
 }
 
 /**
@@ -69,6 +72,7 @@ export class PiConversation implements Conversation {
 
   async ask(prompt: string, ctx: { run?: string; addressed?: boolean; mustSpeak?: boolean; images?: ImageContent[] } = {}): Promise<string> {
     this.cur = { run: ctx.run };
+    this.d.budget?.reset();
     const images = this.acceptsImages ? ctx.images : undefined; // a text-only model would reject the request
     try {
       await this.flushMemoryIfNeeded(prompt, images?.length);
@@ -80,6 +84,7 @@ export class PiConversation implements Conversation {
       const reason = ctx.addressed ? "addressed without send" : "must speak without send";
       this.log.warn(`group ${this.d.groupId}: ${reason}; reminding it once`);
       this.emit("turn.nudge", { reason, dropped_chars: first.text.length });
+      this.d.budget?.reset();
       try {
         return (await this.runTurn(ctx.addressed ? SEND_NUDGE_PROMPT : SPEAK_NUDGE_PROMPT, "nudge")).text;
       } catch (err) {
@@ -132,7 +137,7 @@ export class PiConversation implements Conversation {
       final_chars: text.length,
       persisted_through_seq: this.seqs.at(-1),
     });
-    const sent = added.some((m) => m.role === "toolResult" && m.toolName === SEND_TOOL && !m.isError);
+    const sent = added.some((m) => m.role === "toolResult" && SPEAK_TOOLS.includes(m.toolName) && !m.isError);
     return { text, sent };
   }
 
@@ -197,7 +202,7 @@ export class PiConversation implements Conversation {
     this.emit("conv.state", { from: "fresh", to: "flushing", reason: "context near compaction" });
     const t0 = Date.now();
     const tools = session.getActiveToolNames();
-    session.setActiveToolsByName(tools.filter((n) => n !== SEND_TOOL));
+    session.setActiveToolsByName(tools.filter((n) => !SPEAK_TOOLS.includes(n)));
     try {
       await this.runTurn(MEMORY_FLUSH_PROMPT, "flush");
       this.flushed = true;
