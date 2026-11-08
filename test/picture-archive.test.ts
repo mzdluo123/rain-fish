@@ -51,7 +51,7 @@ describe("picture archive", () => {
     const captured = await Promise.all(batch.map((p) => archive.capture(p.msg)));
     const before = loads.length;
     const source: ImageSource = { maxPerRun: 4, load: async () => { throw new Error("must not download"); } };
-    const { images, numbers } = await attachImages(batch, source, captured);
+    const { images, numbers } = await attachImages(batch, source, captured, archive);
     expect(loads.length).toBe(before);
     expect(images).toHaveLength(2);
     const ids = captured.map((row) => row.map((x) => x!.id));
@@ -63,16 +63,46 @@ describe("picture archive", () => {
 });
 
 describe("picture archive: model copy", () => {
-  it("stores the original but hands the model the scaled copy", async () => {
+  async function scaled() {
     const { createModelImage } = await import("../src/image-resize.js");
     const { pngBytes } = await import("./helpers.js");
     const original = pngBytes(1600, 1200);
     const source: ImageSource = { maxPerRun: 4, load: async () => ({ type: "image", data: original.toString("base64"), mimeType: "image/png" }) };
     const store = new ImageStore(openDb(":memory:"));
-    const archive = createPictureArchive({ source, store, maxBytes: 50_000_000, shrink: createModelImage({ maxPixels: 100_000, maxEdge: 1568, detailMaxPixels: 200_000 }) });
+    const inner = createModelImage({ maxPixels: 100_000, maxEdge: 1568, detailMaxPixels: 200_000 });
+    const calls: number[] = [];
+    const archive = createPictureArchive({ source, store, maxBytes: 50_000_000, shrink: async (img, closer) => (calls.push(img.data.length), inner(img, closer)) });
+    return { original, store, archive, calls };
+  }
+
+  it("stores the original and scales only when the model copy is asked for", async () => {
+    const { original, store, archive, calls } = await scaled();
     const [pic] = await archive.capture(msg("1", ["https://x/a"]));
+    expect(calls).toHaveLength(0); // capturing a picture does not scale it
     expect(store.get("100", pic!.id)!.data.equals(original)).toBe(true);
-    expect(Buffer.from(pic!.image.data, "base64").length).toBeLessThan(original.length / 4);
+    const shown = await archive.image("100", pic!.id);
+    expect(calls).toHaveLength(1);
+    expect(Buffer.from(shown!.data, "base64").length).toBeLessThan(original.length / 4);
+    expect(store.get("100", pic!.id)!.data.equals(original)).toBe(true); // the original is untouched
+  });
+
+  it("a picture another group never saw cannot be fetched", async () => {
+    const { archive } = await scaled();
+    const [pic] = await archive.capture(msg("1", ["https://x/a"]));
+    expect(await archive.image("200", pic!.id)).toBeUndefined();
+    expect(await archive.image("100", 9999)).toBeUndefined();
+  });
+
+  it("attaching scales only the pictures that are really attached (the newest maxPerRun), not the rest of the batch", async () => {
+    const { archive, calls } = await scaled();
+    const { attachImages } = await import("../src/responder.js");
+    const batch = [{ msg: msg("1", ["https://x/a", "https://x/b", "https://x/c"]), addressed: false }];
+    const captured = await Promise.all(batch.map((p) => archive.capture(p.msg)));
+    expect(calls).toHaveLength(0);
+    const never: ImageSource = { maxPerRun: 2, load: async () => { throw new Error("must not download"); } };
+    const { images } = await attachImages(batch, never, captured, archive);
+    expect(calls).toHaveLength(1); // the three pictures are the same bytes -> one picture, one scaling
+    expect(images).toHaveLength(1);
   });
 
   it("a message whose pictures are already stored is not downloaded again (the URL may be gone)", async () => {
@@ -83,6 +113,5 @@ describe("picture archive: model copy", () => {
     const expired: ImageSource = { maxPerRun: 4, load: async () => { throw new Error("URL expired"); } };
     const [again] = await createPictureArchive({ source: expired, store, maxBytes: 1_000_000 }).capture(m); // e.g. after a restart
     expect(again?.id).toBe(first!.id);
-    expect(again?.image.data).toBe(first!.image.data);
   });
 });

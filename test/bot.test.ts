@@ -160,7 +160,7 @@ describe("Bot pictures", () => {
     const db = openDb(":memory:");
     const images = new ImageStore(db);
     const captured: GroupMessage[] = [];
-    const bot = new Bot({ store: new MessageStore(db), images, pictures: { capture: async (m) => (captured.push(m), []) }, responder: { notify() {} }, api: { sendGroupMessage: async (groupId, message) => (s.sent.push({ groupId, message }), { messageId: "9001" }) }, events: s.trace.events });
+    const bot = new Bot({ store: new MessageStore(db), images, pictures: { capture: async (m) => (captured.push(m), []), image: async () => undefined }, responder: { notify() {} }, api: { sendGroupMessage: async (groupId, message) => (s.sent.push({ groupId, message }), { messageId: "9001" }) }, events: s.trace.events });
     bot.noteSelfId(SELF);
     return { ...s, bot, images, captured, store: new MessageStore(db), db };
   }

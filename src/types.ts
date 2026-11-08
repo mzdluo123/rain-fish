@@ -218,10 +218,9 @@ export interface StoredImage {
 /** The copy of a picture that is shown to the model (scaled down). `closer`: a larger budget, for when the agent wants detail. Never throws. */
 export type ModelImageFn = (img: { data: Buffer; mime: string }, closer?: boolean) => Promise<{ data: Buffer; mime: string }>;
 
-/** A picture of a message, stored: its id and the content to show the model. */
+/** A picture of a message that is stored: its id. */
 export interface StoredPicture {
   id: number;
-  image: ImageContent;
 }
 
 /**
@@ -230,6 +229,8 @@ export interface StoredPicture {
  */
 export interface PictureArchive {
   capture(msg: GroupMessage): Promise<(StoredPicture | undefined)[]>;
+  /** The copy of a stored picture of `groupId` that the model sees (scaled down); made when asked for, not when the picture is stored. Never throws. */
+  image(groupId: string, id: number): Promise<ImageContent | undefined>;
 }
 
 /** An image of a group message: where QQ serves it. The URL expires, so it is only good for a short while. */

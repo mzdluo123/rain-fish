@@ -36,16 +36,29 @@ export function formatBatch(batch: PendingMessage[], imageNumbers: readonly (rea
 /**
  * Fetches the pictures of the newest messages of a batch (at most `source.maxPerRun`). Messages whose picture cannot be
  * had keep their `[图片]` text only; identical pictures are attached once. Returns the images in order and, per message, their numbers.
- * `captured` (per message, per picture) are pictures already stored by the archive; with it nothing is downloaded again.
+ * `captured` (per message, per picture) are pictures already stored by `archive`; with them nothing is downloaded again, and
+ * only the pictures that are really attached are scaled down for the model.
  */
 export async function attachImages(
   batch: PendingMessage[],
   source: ImageSource,
   captured?: readonly (readonly (StoredPicture | undefined)[])[],
+  archive?: PictureArchive,
 ): Promise<{ images: ImageContent[]; numbers: number[][] }> {
   const slots = batch.flatMap((p, msg) => (p.msg.images ?? []).map((ref, k) => ({ msg, k, url: ref.url })));
   const wanted = source.maxPerRun > 0 ? slots.slice(-source.maxPerRun) : [];
-  const loaded = await Promise.all(wanted.map((s) => (captured ? captured[s.msg]?.[s.k]?.image : source.load(s.url))));
+  const scaled = new Map<number, Promise<ImageContent | undefined>>(); // the same stored picture in several slots is prepared once
+  const loaded = await Promise.all(
+    wanted.map((s) => {
+      if (!captured) return source.load(s.url);
+      const stored = captured[s.msg]?.[s.k];
+      if (!stored || !archive) return undefined;
+      const groupId = batch[s.msg]!.msg.groupId;
+      let p = scaled.get(stored.id);
+      if (!p) scaled.set(stored.id, (p = archive.image(groupId, stored.id)));
+      return p;
+    }),
+  );
   const images: ImageContent[] = [];
   const numberOf = new Map<string, number>();
   const numbers: number[][] = batch.map(() => []);
@@ -236,7 +249,7 @@ export class PiResponder implements GroupResponder {
       const captured = pictures ? await Promise.all(batch.map((p) => pictures.capture(p.msg))) : undefined; // already stored when they arrived, normally
       const imageIds = captured ? captured.map((row) => row.flatMap((x) => (x ? [x.id] : []))) : [];
       if (this.opts.images && conv.acceptsImages) {
-        const attached = await attachImages(batch, this.opts.images, captured);
+        const attached = await attachImages(batch, this.opts.images, captured, pictures);
         prompt = formatBatch(batch, attached.numbers, mustSpeak, imageIds);
         images = attached.images;
         const refs = batch.reduce((n, p) => n + (p.msg.images?.length ?? 0), 0);
