@@ -6,7 +6,7 @@ import { PiConversation } from "../src/conversation.js";
 import { ConversationStore } from "../src/conversation-store.js";
 import { openDb } from "../src/db/open.js";
 import { MessageStore } from "../src/store.js";
-import type { ContextConfig } from "../src/types.js";
+import type { CacheCompactConfig, ContextConfig } from "../src/types.js";
 import { assistantCall, assistantError, assistantText, memoryEventLog, recordingLogger, tokensOf, toolResultMsg } from "./helpers.js";
 
 type Script = (prompt: string, n: number) => AgentMessage[];
@@ -55,13 +55,13 @@ function fakeSession(opts: { vision?: boolean; script?: Script } = {}) {
 // flushRatio 10 = the memory flush never triggers here; it has its own suite below
 const ctx: ContextConfig = { recentTokens: 1500, compactTokens: 6000, archiveTokens: 3000, flushRatio: 10 };
 
-async function setup(over: { vision?: boolean; script?: Script; context?: Partial<ContextConfig>; db?: ReturnType<typeof openDb>; group?: string; persona?: () => string | undefined; personaPaths?: () => ReadonlySet<string>; unlinked?: () => string[] } = {}) {
+async function setup(over: { vision?: boolean; script?: Script; context?: Partial<ContextConfig>; db?: ReturnType<typeof openDb>; group?: string; persona?: () => string | undefined; personaPaths?: () => ReadonlySet<string>; unlinked?: () => string[]; cacheCompact?: CacheCompactConfig; now?: () => number } = {}) {
   const db = over.db ?? openDb(":memory:");
   const store = new ConversationStore(db);
   const rec = recordingLogger();
   const session = fakeSession(over);
   const trace = memoryEventLog();
-  const conv = await PiConversation.create({ groupId: over.group ?? "g1", session: session as never, store, context: { ...ctx, ...over.context }, logger: rec.logger, events: trace.events, persona: over.persona, personaPaths: over.personaPaths, unlinked: over.unlinked });
+  const conv = await PiConversation.create({ groupId: over.group ?? "g1", session: session as never, store, context: { ...ctx, ...over.context }, logger: rec.logger, events: trace.events, persona: over.persona, personaPaths: over.personaPaths, unlinked: over.unlinked, cacheCompact: over.cacheCompact, now: over.now });
   return { db, store, session, conv, entries: rec.entries, trace };
 }
 const roles = (s: { state: { messages: AgentMessage[] } }) => s.state.messages.map((m) => (isArchiveMessage(m) ? "archive" : m.role));
@@ -557,5 +557,54 @@ describe("archive across several compactions", () => {
     expect(archive.sourceText).not.toContain("旧版档案");
     expect(archive.sourceText).not.toContain("写入档案");
     expect(archive.sourceText).not.toContain("QQ 账号");
+  });
+});
+
+describe("compaction after the prompt cache expired", () => {
+  const cc: CacheCompactConfig = { enabled: true, ttlMs: 3_600_000, minSavedTokens: 1000, minSavedRatio: 0.3 };
+  const lastRequestEnd = (s: { state: { messages: AgentMessage[] } }) => s.state.messages.findLast((m) => m.role === "assistant")!.timestamp;
+  /** Builds a conversation with ~3 turns of history, below the normal compaction threshold. */
+  async function withHistory(over: Parameters<typeof setup>[0] = {}) {
+    let now = 0;
+    const t = await setup({ script: (_p, n) => [assistantText(`第${n}轮 ` + tokensOf(1500))], context: { compactTokens: 50_000 }, cacheCompact: cc, now: () => now, ...over });
+    for (let i = 0; i < 4; i++) await t.conv.ask(`问题${i}`);
+    const at = (ms: number) => { now = lastRequestEnd(t.session) + ms; };
+    return { ...t, at };
+  }
+
+  it("archives the whole live context when the cache is gone and that saves a lot", async () => {
+    const t = await withHistory();
+    t.at(cc.ttlMs + 1);
+    await t.conv.ask("好久不见");
+    expect(roles(t.session)).toEqual(["archive", "user", "assistant"]); // everything before this run is archived, only the new turn is live
+    expect(t.store.load("g1").archive).toBeDefined();
+    expect(t.trace.records("compact.done").some((r) => r.reason === "cache expired")).toBe(true);
+  });
+
+  it("leaves everything alone while the cache is still alive", async () => {
+    const t = await withHistory();
+    t.at(cc.ttlMs - 1000);
+    await t.conv.ask("马上又来");
+    expect(roles(t.session)[0]).toBe("user");
+    expect(t.store.load("g1").archive).toBeUndefined();
+  });
+
+  it("does not compact when it would save too little", async () => {
+    const t = await withHistory({ cacheCompact: { ...cc, minSavedTokens: 1_000_000 } });
+    t.at(cc.ttlMs + 1);
+    await t.conv.ask("好久不见");
+    expect(t.store.load("g1").archive).toBeUndefined();
+    expect(t.trace.records("compact.skip").some((r) => /too little/.test(String(r.reason)))).toBe(true);
+  });
+
+  it("does nothing when disabled, when not configured, or with no request in the history", async () => {
+    const off = await withHistory({ cacheCompact: { ...cc, enabled: false } });
+    off.at(cc.ttlMs + 1);
+    await off.conv.ask("x");
+    expect(off.store.load("g1").archive).toBeUndefined();
+
+    const fresh = await setup({ script: bigScript, cacheCompact: cc, now: () => Number.MAX_SAFE_INTEGER });
+    await fresh.conv.ask("第一次");
+    expect(fresh.store.load("g1").archive).toBeUndefined();
   });
 });

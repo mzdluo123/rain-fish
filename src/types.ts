@@ -441,6 +441,7 @@ export interface PendingRequest {
 // ---- model & context management ---------------------------------------------------
 
 export type ContextConfig = Config["context"];
+export type CacheCompactConfig = Config["cacheCompact"];
 
 /** One agent conversation (a group's, or the CLI's). */
 export interface Conversation {
