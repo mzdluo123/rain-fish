@@ -68,7 +68,7 @@ export const configSchema = z
     /** This many pending messages wake the agent at once. */
     WAKE_MAX_BATCH: z.coerce.number().int().positive().default(30),
     /** Every this many agent runs of a group, the next batch carries a system notice that the agent must say something. 0 = never. */
-    SPEAK_EVERY_RUNS: z.coerce.number().int().nonnegative().default(5),
+    SPEAK_EVERY_RUNS: z.coerce.number().int().nonnegative().default(3),
     // --- history backfill ---
     /** At startup, a group with fewer stored messages than this gets its recent history pulled from the QQ API. 0 = never. */
     BACKFILL_MIN_MESSAGES: z.coerce.number().int().nonnegative().default(100),
