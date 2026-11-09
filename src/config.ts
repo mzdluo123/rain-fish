@@ -62,6 +62,8 @@ export const configSchema = z
     CACHE_COMPACT_MIN_SAVED_TOKENS: z.coerce.number().int().positive().default(8000),
     /** ... and at least this fraction of the whole request (0 < ratio <= 1). */
     CACHE_COMPACT_MIN_SAVED_RATIO: z.coerce.number().gt(0).lte(1).default(0.4),
+    /** If compacting after cache expiry saves too little, forget the whole context instead (live messages AND archive), provided that saves enough. */
+    CACHE_COMPACT_CLEAR_FALLBACK: flag(true),
     // --- wake-ups ---
     // The wake-up comes after the chat has gone quiet (Hawkes excitation, see src/wake-intensity.ts) plus a random "reaction time".
     /** Mean seconds of the random reaction time (exponential) added after the chat has gone quiet, while only ordinary chatter is pending. */
@@ -164,6 +166,7 @@ export const configSchema = z
       ttlMs: e.CACHE_COMPACT_TTL_SECONDS * 1000,
       minSavedTokens: e.CACHE_COMPACT_MIN_SAVED_TOKENS,
       minSavedRatio: e.CACHE_COMPACT_MIN_SAVED_RATIO,
+      clearFallback: e.CACHE_COMPACT_CLEAR_FALLBACK,
     },
     speakEveryRuns: e.SPEAK_EVERY_RUNS,
     wake: {

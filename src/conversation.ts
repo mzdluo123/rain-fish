@@ -320,7 +320,7 @@ export class PiConversation implements Conversation {
    * Forgets the whole context, archive included (the console `clear` command); the group's chat log, the files and the
    * profile stay. Must not overlap a run: the responder serialises it with the group's runs. Returns the live messages dropped.
    */
-  clear(): number {
+  clear(why: "manual" | "cache expired" = "manual"): number {
     const dropped = this.d.store.clear(this.d.groupId);
     const tokens = this.contextTokens("");
     this.setTranscript([]);
@@ -330,7 +330,7 @@ export class PiConversation implements Conversation {
     this.flushed = false;
     this.cur = {};
     this.log.success(`group ${this.d.groupId}: cleared the context (${dropped} message(s), ~${tokens} tokens)`);
-    this.emit("conv.state", { from: "any", to: "fresh", reason: "manual clear", dropped_messages: dropped, tokens_before: tokens });
+    this.emit("conv.state", { from: "any", to: "fresh", reason: why === "manual" ? "manual clear" : "clear after cache expiry", dropped_messages: dropped, tokens_before: tokens });
     return dropped;
   }
 
@@ -358,7 +358,14 @@ export class PiConversation implements Conversation {
     this.emit("cache.expired", { idle_ms: idle, ttl_ms: cfg.ttlMs, tokens });
     const accept = (saved: number) => saved >= cfg.minSavedTokens && saved >= tokens * cfg.minSavedRatio;
     const done = await this.archiveThrough(state.messages.length, offset, tokens, "cache expired", accept);
-    if (!done) this.emit("compact.skip", { tokens, reason: "cache expired but compaction would save too little" });
+    if (done) return;
+    // Compacting saves too little. Forgetting everything saves the whole live transcript (archive included).
+    if (cfg.clearFallback && accept(estimateMessagesTokens(state.messages))) {
+      this.emit("cache.clear", { tokens, saved_tokens: estimateMessagesTokens(state.messages) });
+      this.clear("cache expired");
+      return;
+    }
+    this.emit("compact.skip", { tokens, reason: "cache expired but compaction would save too little" });
   }
 
   /** Snap-compact older history once the context passes the threshold. */
