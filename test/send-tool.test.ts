@@ -118,6 +118,18 @@ describe("a run with several messages", () => {
     expect(env.sent.map((s) => s.text)).toEqual(["ok", "再试一次"]);
   });
 
+  it("a batch with a write blocks send/send_image/stop (nothing is posted); they work in a later step", async () => {
+    const { f, env, session } = await faux();
+    f.setResponses([
+      fauxAssistantMessage([fauxToolCall("write", { path: "/n.md", content: "x" }), fauxToolCall("send", { text: "早了" }), fauxToolCall("stop", {})], { stopReason: "toolUse" }),
+      fauxAssistantMessage([fauxToolCall("send", { text: "写好了" }), fauxToolCall("stop", {})], { stopReason: "toolUse" }),
+    ]);
+    await session.prompt("hi");
+    expect(env.fs.readText("/n.md")).toBe("x");
+    expect(env.sent.map((s) => s.text)).toEqual(["写好了"]);
+    expect(f.state.callCount).toBe(2);
+  });
+
   it("send_image posts a stored picture of this group; unknown ids are an error", async () => {
     const { f, env, session } = await faux();
     const id = env.images.put("100", "m1", 0, Buffer.from([0xff, 0xd8, 0xff, 1]), "image/jpeg");

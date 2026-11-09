@@ -1,9 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createAgent } from "../src/agent.js";
 import { loadSystemPrompt } from "../src/conversation-factory.js";
+import { seedPersona } from "../src/context/persona.js";
 import { makeEnv } from "./helpers.js";
 
 describe("agent", () => {
@@ -48,9 +49,27 @@ describe("loadSystemPrompt", () => {
     expect(() => loadSystemPrompt(dir)).toThrow(/not found/); // a directory is not a prompt
   });
 
-  it("the shipped prompt loads, and never mentions the file it lives in", () => {
+  it("the shipped prompt loads, never mentions the file it lives in, and carries no persona (that is the seed's job)", () => {
     const text = loadSystemPrompt("prompts/agent.md");
-    expect(text).toContain("Yukino");
     expect(text).not.toMatch(/agent\.md/);
+    expect(text).not.toContain("Yukino");
+    expect(readFileSync("prompts/persona.md", "utf-8")).toContain("Yukino");
+  });
+});
+
+describe("seedPersona", () => {
+  it("creates /persona.md from the host file once, and never overwrites what the agent has made of it", () => {
+    const f = path.join(mkdtempSync(path.join(os.tmpdir(), "seed-")), "persona.md");
+    writeFileSync(f, "# 身份\n雪乃\n");
+    const { fs } = makeEnv();
+    expect(seedPersona(fs, f)).toBe(true);
+    expect(fs.readText("/persona.md")).toBe("# 身份\n雪乃\n");
+    fs.writeFile("/persona.md", "agent edit");
+    expect(seedPersona(fs, f)).toBe(false);
+    expect(fs.readText("/persona.md")).toBe("agent edit");
+  });
+
+  it("fails clearly when the seed file is missing", () => {
+    expect(() => seedPersona(makeEnv().fs, "/nonexistent/persona.md")).toThrow(/PERSONA_SEED_FILE/);
   });
 });

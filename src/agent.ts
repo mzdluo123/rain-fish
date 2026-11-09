@@ -27,6 +27,10 @@ export const ALLOWED_TOOLS = ["read", "write", "edit", "ls", "find", "grep", SEA
 /** The agent's working directory is the root of its virtual filesystem. */
 const VFS_ROOT = "/";
 
+const WRITE_TOOL = "write";
+/** Tools that cannot meaningfully fail, so they must not run in a batch with a `write`. */
+const GUARDED_TOOLS: ReadonlySet<string> = new Set([SEND_TOOL, SEND_IMAGE_TOOL, STOP_TOOL]);
+
 export async function createAgent({ systemPrompt, fs, store, groupId, send, sendImage, images, budget, modelImage, model, modelRuntime, thinkingLevel }: AgentDeps): Promise<{ session: AgentSession }> {
   let current: AgentSession | undefined; // set right after the session exists; the tools below use it lazily
   // An edit, or a write over an existing file, needs the file's current text in the context window: the guard looks at the session's own messages.
@@ -79,6 +83,18 @@ export async function createAgent({ systemPrompt, fs, store, groupId, send, send
   });
 
   current = session;
+
+  // `write` can fail; `send`/`send_image`/`stop` practically cannot. If they ran in the same batch, a failed write would still
+  // have posted a message or ended the run. So when the batch contains a `write`, the others are blocked (they come back as
+  // errors and the agent repeats them in the next step, after seeing the write's result). Blocking happens before execution:
+  // an already-sent message cannot be taken back.
+  const previousBefore = session.agent.beforeToolCall;
+  session.agent.beforeToolCall = async (context, signal) => {
+    const base = await previousBefore?.(context, signal);
+    if (base?.block || !GUARDED_TOOLS.has(context.toolCall.name)) return base;
+    const writes = context.assistantMessage.content.some((c) => c.type === "toolCall" && c.name === WRITE_TOOL);
+    return writes ? { block: true, reason: `Not executed: this step also calls \`${WRITE_TOOL}\`, which may fail. Call \`${context.toolCall.name}\` again in a later step, after the \`${WRITE_TOOL}\` result is known.` } : base;
+  };
 
   // The agent loop ends only if EVERY tool result of a batch asks for it. When `stop` is called together with other tools
   // (`[send, send, stop]`), those must not keep the loop alive: they end with it, unless one failed (then the agent

@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { element, systemMessage } from "../xml.js";
 import type { VirtualFs } from "../vfs.js";
@@ -7,6 +8,24 @@ import type { VirtualFs } from "../vfs.js";
 export const PERSONA_PATH = "/persona.md";
 /** Longest persona text shown (the agent itself may write at most 10 KiB per file; host imports are not limited). */
 export const PERSONA_MAX_CHARS = 16_000;
+
+/**
+ * Creates `/persona.md` from a host file if the filesystem has none (a fresh database). An existing file is never touched:
+ * from then on the agent owns it. A missing or empty seed file is a startup error, like the system prompt.
+ * Returns whether it wrote the file.
+ */
+export function seedPersona(fs: Pick<VirtualFs, "exists" | "writeFile">, file: string): boolean {
+  if (fs.exists(PERSONA_PATH)) return false;
+  let text: string;
+  try {
+    text = readFileSync(file, "utf-8");
+  } catch {
+    throw new Error(`Persona seed file not found: ${file} (set PERSONA_SEED_FILE)`);
+  }
+  if (!text.trim()) throw new Error(`Persona seed file is empty: ${file}`);
+  fs.writeFile(PERSONA_PATH, text);
+  return true;
+}
 
 /**
  * The agent's own notes (`/persona.md`), shown at the very top of every request so that what it has learned about itself

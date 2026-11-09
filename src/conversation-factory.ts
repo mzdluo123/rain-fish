@@ -10,7 +10,7 @@ import { noopEventLog } from "./trace/event-log.js";
 import type { Config, EventLog, GroupImageSender, GroupSender, Logger } from "./types.js";
 import { ImageStore } from "./image-store.js";
 import { RunBudget } from "./run-budget.js";
-import { PERSONA_PATH, personaTree } from "./context/persona.js";
+import { PERSONA_PATH, personaTree, seedPersona } from "./context/persona.js";
 import { createModelImage } from "./image-resize.js";
 import { VirtualFs } from "./vfs.js";
 
@@ -56,6 +56,7 @@ export async function createPiConversationFactory(db: Database, config: Config, 
   logger.info(`prompt ${config.promptFile} · model ${config.model ?? "(Pi default)"} · context: keep ${config.context.recentTokens}t recent, snap-compact at ${config.context.compactTokens}t (archive ${config.context.archiveTokens}t)`);
 
   const fs = new VirtualFs(db);
+  if (seedPersona(fs, config.personaSeedFile)) logger.info(`seeded ${PERSONA_PATH} from ${config.personaSeedFile}`);
   const store = new MessageStore(db);
   const images = new ImageStore(db);
   const modelImage = createModelImage({ maxPixels: config.images.modelMaxPixels, maxEdge: config.images.modelMaxEdge, detailMaxPixels: config.images.detailMaxPixels });
