@@ -62,12 +62,20 @@ export class Bot {
     this.opts.responder.notify(msg, addressed);
   }
 
+  /** OneBot reply segments need a numeric message id; synthetic ids (e.g. pokes) cannot be quoted, so the send goes out unquoted. */
+  private quotable(replyTo: string | undefined): string | undefined {
+    if (replyTo === undefined || /^-?\d+$/.test(replyTo)) return replyTo;
+    this.log.debug(`not quoting non-numeric message id ${replyTo}`);
+    return undefined;
+  }
+
   /**
    * Posts `text` to `groupId`, quoting `replyTo` on the first chunk. Throws if any chunk fails to send.
    * Every sent chunk is also stored (as from the bot), so "a reply to the bot's message" is still recognised
    * after a restart and when NapCat does not report the bot's own messages.
    */
   async sendText(groupId: string, text: string, replyTo?: string): Promise<void> {
+    replyTo = this.quotable(replyTo);
     const chunks = splitReply(text);
     for (const [i, chunk] of chunks.entries()) {
       const segments: OutboundSegment[] = [{ type: "text", data: { text: chunk } }];
@@ -94,6 +102,7 @@ export class Bot {
    * sent. The message is stored like `sendText`'s, linked to the picture so it can be found again.
    */
   async sendImage(groupId: string, imageId: number, text?: string, replyTo?: string): Promise<void> {
+    replyTo = this.quotable(replyTo);
     const img = this.opts.images?.get(groupId, imageId);
     if (!img) throw new Error(`No picture i${imageId} in this group's history (unknown id, or deleted to make room).`);
     const caption = text?.trim();

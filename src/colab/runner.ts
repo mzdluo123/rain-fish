@@ -34,6 +34,18 @@ const realTimer: IdleTimer = {
   clear: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
 };
 
+/** A secret as text, reversed, and in base64 (standard and URL-safe, with and without padding); longest first, so no form is half-masked. */
+export function secretForms(values: readonly string[]): string[] {
+  const forms = new Set<string>();
+  for (const v of values) {
+    if (v.length === 0) continue;
+    const b64 = Buffer.from(v, "utf-8").toString("base64");
+    const url = Buffer.from(v, "utf-8").toString("base64url");
+    for (const f of [v, [...v].reverse().join(""), b64, b64.replace(/=+$/, ""), url]) if (f.length > 0) forms.add(f);
+  }
+  return [...forms].sort((x, y) => y.length - x.length);
+}
+
 const tailOf = (r: CliResult) => `${r.stderr}\n${r.stdout}`.trim().slice(-500);
 
 /**
@@ -47,7 +59,9 @@ export class ColabRunner {
   private tail: Promise<unknown> = Promise.resolve();
   private pending = 0;
   private idleTimer?: unknown;
-  private readonly recent: number[] = [];
+  private readonly recent: number[];
+  /** Every text form of a secret that is hidden in what comes back (see `secretForms`). */
+  private readonly secrets: string[];
   private readonly log: Logger;
   private readonly events: EventLog;
   private readonly now: () => number;
@@ -58,6 +72,8 @@ export class ColabRunner {
     this.events = o.events ?? noopEventLog;
     this.now = o.now ?? Date.now;
     this.timer = o.timer ?? realTimer;
+    this.recent = o.store.execsSince(this.now() - HOUR_MS); // the hourly cap survives a restart
+    this.secrets = secretForms(Object.values(o.config.env));
   }
 
   /** At startup: a runtime recorded by the last process is reused if it was used within `idleMs`, otherwise released. */
@@ -82,6 +98,7 @@ export class ColabRunner {
       throw new Error(`Rate limit: at most ${this.o.config.maxPerHour} Python runs per hour (all groups together). Try again later.`);
     }
     this.recent.push(now);
+    this.o.store.recordExec(now, now - HOUR_MS);
     this.pending++;
     this.clearIdle();
     return this.enqueue(() => this.execute(req)).finally(() => {
@@ -137,8 +154,8 @@ export class ColabRunner {
       throw new Error(r.aborted ? "The run was aborted." : `No result from Colab within ${idle + EXEC_GRACE_SECONDS}s; the kernel was restarted.`);
     }
     const parsed = parseResult(r.stdout, marker);
-    if (parsed === undefined) return { ok: false, detail: `exit ${r.code}: ${tailOf(r)}` };
-    if ("error" in parsed) throw new Error(`The remote launcher failed: ${parsed.error}`);
+    if (parsed === undefined) return { ok: false, detail: this.hide(`exit ${r.code}: ${tailOf(r)}`) };
+    if ("error" in parsed) throw new Error(`The remote launcher failed: ${this.hide(parsed.error)}`);
     const res = this.mask(parsed.ok);
     this.log.debug(`${req.group ? `group ${req.group}: ` : ""}${req.name}: exit ${res.exitCode}${res.timedOut ? " (timed out)" : ""} in ${res.durationMs}ms`);
     this.events.emit("colab.exec", {
@@ -156,11 +173,18 @@ export class ColabRunner {
     return { ok: true, result: res };
   }
 
-  /** The secrets handed to the script must never come back to the model (a script could print its environment): they are masked in both streams. */
+  /**
+   * The secrets handed to the script should not come back to the model (a script could print its environment): they are masked in
+   * both streams, the launcher error and the CLI output. Only common forms are caught (see `secretForms`); a script that wants to
+   * leak a key can still encode it some other way.
+   */
+  private hide(s: string): string {
+    return this.secrets.reduce((t, v) => t.split(v).join("[REDACTED]"), s);
+  }
+
   private mask(r: PythonRunResult): PythonRunResult {
-    const secrets = Object.values(this.o.config.env).filter((s) => s.length > 0);
-    if (secrets.length === 0) return r;
-    const hide = (s: string) => secrets.reduce((t, v) => t.split(v).join("[REDACTED]"), s);
+    if (this.secrets.length === 0) return r;
+    const hide = (s: string) => this.hide(s);
     return { ...r, stdout: { ...r.stdout, head: hide(r.stdout.head), tail: hide(r.stdout.tail) }, stderr: { ...r.stderr, head: hide(r.stderr.head), tail: hide(r.stderr.tail) } };
   }
 

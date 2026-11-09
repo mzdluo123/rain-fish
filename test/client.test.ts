@@ -224,3 +224,13 @@ describe("history API", () => {
     await until(() => n === 1);
   });
 });
+
+describe("connect timeout", () => {
+  it("gives up on a connection attempt that never opens and retries", async () => {
+    let attempts = 0;
+    const server = Bun.listen({ hostname: "localhost", port: 0, socket: { open() { attempts++; }, data() {} } }); // accepts TCP, never answers the upgrade
+    cleanup.push(() => server.stop(true));
+    connect(server.port, { idleTimeoutMs: 100 });
+    await until(() => attempts >= 2);
+  });
+});

@@ -2,6 +2,7 @@ import readline from "node:readline/promises";
 import { bootstrap, orExit } from "./bootstrap.js";
 import { createPiConversationFactory } from "./conversation-factory.js";
 import { openDb } from "./db/open.js";
+import { summarizeArgs } from "./trace/session-events.js";
 
 const { config, logger, events } = bootstrap();
 const db = openDb(config.dbPath); // one SQLite file holds every piece of state
@@ -19,7 +20,7 @@ conversation.session.subscribe((event) => {
   if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
     process.stdout.write(event.assistantMessageEvent.delta);
   } else if (event.type === "tool_execution_start") {
-    logger.withTag("tool").info(`${event.toolName} ${JSON.stringify(event.args)}`);
+    logger.withTag("tool").debug(`${event.toolName} ${JSON.stringify(summarizeArgs(events, event.args))}`);
   }
 });
 

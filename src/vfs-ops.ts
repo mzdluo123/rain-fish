@@ -60,7 +60,9 @@ export function createVfsOperations(vfs: VirtualFs, opts: { requireSeen?: (p: st
         assertAgentWritable(p, content);
         vfs.writeFile(p, content);
       },
-      mkdir: async (dir) => vfs.mkdir(dir),
+      // Pi calls mkdir(dirname) before writeFile; creating parents here would leave dirs behind a refused write.
+      // writeFile creates its parents itself, so this only validates the path.
+      mkdir: async (dir) => void VirtualFs.normalize(dir),
     },
     edit: {
       readFile: async (p) => vfs.readFile(p),

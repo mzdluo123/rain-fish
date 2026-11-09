@@ -56,8 +56,10 @@ export async function createAgent({ systemPrompt, fs, store, groupId, send, send
   await resourceLoader.reload();
 
   // Context is managed by PiConversation (snap compaction); Pi's own LLM-summary compaction must not also run.
+  // Pictures are already scaled by us (`ModelImageFn`) before they reach Pi. Pi's own resize (prompt images and tool results)
+  // would re-encode them, so the stored block would no longer match the `imageKey` the responder computed: repeats would be re-attached.
   const settingsManager = SettingsManager.create(VFS_ROOT, getAgentDir());
-  settingsManager.applyOverrides({ compaction: { enabled: false } });
+  settingsManager.applyOverrides({ compaction: { enabled: false }, images: { autoResize: false } });
 
   const allowed: string[] = ALLOWED_TOOLS.filter((n) => n !== RUN_PYTHON_TOOL || python !== undefined);
   const { session } = await createAgentSession({

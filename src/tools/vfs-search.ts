@@ -26,12 +26,12 @@ export function createVfsFindTool(vfs: VirtualFs) {
     parameters: Type.Object({
       pattern: Type.String({ description: "Glob pattern, e.g. '*.md' (any depth) or 'notes/**/*.txt'" }),
       path: Type.Optional(Type.String({ description: "Directory to search (default: /)" })),
-      limit: Type.Optional(Type.Number({ description: `Maximum number of results (default: ${FIND_DEFAULT_LIMIT})` })),
+      limit: Type.Optional(Type.Number({ minimum: 1, description: `Maximum number of results (default: ${FIND_DEFAULT_LIMIT})` })),
     }),
     execute: async (_id, p) => {
       const base = VirtualFs.normalize(p.path ?? "/");
       if (!vfs.exists(base)) throw new Error(`Path not found: ${base}`);
-      const limit = p.limit ?? FIND_DEFAULT_LIMIT;
+      const limit = Math.max(1, p.limit ?? FIND_DEFAULT_LIMIT);
       const found = vfs.glob(p.pattern, base, { ignore: IGNORE, limit }).map((f) => relativeTo(base, f));
       if (found.length === 0) return { content: [{ type: "text", text: "No files found matching pattern" }], details: { count: 0 } };
       const notice = found.length >= limit ? `\n\n[${limit} results limit reached]` : "";
@@ -54,7 +54,7 @@ export function createVfsGrepTool(vfs: VirtualFs) {
       ignoreCase: Type.Optional(Type.Boolean({ description: "Case-insensitive search (default: false)" })),
       literal: Type.Optional(Type.Boolean({ description: "Treat pattern as literal string instead of regex (default: false)" })),
       context: Type.Optional(Type.Number({ description: "Number of lines to show before and after each match (default: 0)" })),
-      limit: Type.Optional(Type.Number({ description: `Maximum number of matches to return (default: ${GREP_DEFAULT_LIMIT})` })),
+      limit: Type.Optional(Type.Number({ minimum: 1, description: `Maximum number of matches to return (default: ${GREP_DEFAULT_LIMIT})` })),
     }),
     execute: async (_id, p) => {
       const base = VirtualFs.normalize(p.path ?? "/");
@@ -65,7 +65,7 @@ export function createVfsGrepTool(vfs: VirtualFs) {
       } catch (err) {
         throw new Error(`Invalid regex: ${err instanceof Error ? err.message : String(err)}`);
       }
-      const limit = p.limit ?? GREP_DEFAULT_LIMIT;
+      const limit = Math.max(1, p.limit ?? GREP_DEFAULT_LIMIT);
       const ctx = Math.max(0, Math.trunc(p.context ?? 0));
       const globMatches = new Set(p.glob ? vfs.glob(p.glob, base) : []);
 

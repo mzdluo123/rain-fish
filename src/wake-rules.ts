@@ -17,6 +17,7 @@ import { z } from "zod";
 import type { Logger, WeighFn, WeightRule } from "./types.js";
 import { noopLogger } from "./logger.js";
 import type { VirtualFs } from "./vfs.js";
+import { PERSONA_PATH } from "./context/persona.js";
 
 export const WAKE_RULES_PATH = "/wake-rules.yaml";
 /** The Markdown table of earlier versions; replaced (deleted) when the YAML file is first created. */
@@ -171,6 +172,14 @@ export function createWakeRules(opts: { fs: VirtualFs; logger?: Logger }): { wei
         if (opts.fs.exists(LEGACY_WAKE_RULES_PATH)) {
           opts.fs.remove(LEGACY_WAKE_RULES_PATH); // the Markdown table is no longer read; keeping it would only mislead
           log.warn(`removed the old ${LEGACY_WAKE_RULES_PATH}: wake rules now live in ${WAKE_RULES_PATH} (reset to the defaults)`);
+          if (opts.fs.exists(PERSONA_PATH)) {
+            const persona = opts.fs.readText(PERSONA_PATH);
+            const fixed = persona.replaceAll(`](${LEGACY_WAKE_RULES_PATH})`, `](${WAKE_RULES_PATH})`);
+            if (fixed !== persona) {
+              opts.fs.writeFile(PERSONA_PATH, fixed);
+              log.info(`pointed the links in ${PERSONA_PATH} at ${WAKE_RULES_PATH}`);
+            }
+          }
         }
       }
       const text = opts.fs.readText(WAKE_RULES_PATH);

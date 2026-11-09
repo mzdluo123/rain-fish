@@ -224,6 +224,7 @@ export class OneBotClient implements QQApi, QQHistoryApi {
     };
     ws.onerror = () => {}; // always followed by onclose
     ws.onclose = () => onDead("closed");
+    armIdle(); // also bounds a connection attempt that never opens
   }
 }
 

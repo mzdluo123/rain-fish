@@ -5,7 +5,9 @@ import path from "node:path";
 import { createAgent } from "../src/agent.js";
 import { loadSystemPrompt } from "../src/conversation-factory.js";
 import { seedPersona } from "../src/context/persona.js";
-import { makeEnv } from "./helpers.js";
+import { makeEnv, pngBytes } from "./helpers.js";
+import type { ImageContent } from "@earendil-works/pi-ai";
+import { imageKey } from "../src/context/image-key.js";
 
 describe("agent", () => {
   it("uses the given text verbatim as the system prompt", async () => {
@@ -29,6 +31,18 @@ describe("agent", () => {
   it("exposes exactly the file tools, search_messages, the picture tools and send/stop, and no bash", async () => {
     const { session } = await createAgent(makeEnv());
     expect(session.getActiveToolNames().sort()).toEqual(["edit", "find", "grep", "ls", "read", "search_messages", "send", "send_image", "stop", "view_image", "write"]);
+  });
+
+  it("hands pictures to the model as we scaled them: Pi's own resize (prompt images, tool results) is off, so their imageKey stays the same", async () => {
+    const { session } = await createAgent(makeEnv());
+    expect(session.settingsManager.getImageAutoResize()).toBe(false);
+    const big: ImageContent = { type: "image", data: pngBytes(2600, 40).toString("base64"), mimeType: "image/png" }; // wider than Pi's 2000 px default
+    // The step `session.prompt` runs on prompt images (private in Pi; exercised here because it is what would re-encode them).
+    const normalize: unknown = Reflect.get(session, "_normalizePromptImages");
+    if (typeof normalize !== "function") throw new Error("Pi renamed _normalizePromptImages: point this test at its prompt-image step");
+    const { images } = (await normalize.call(session, [big])) as { images: ImageContent[] }; // Pi's own return shape (private, untyped)
+    expect(images).toHaveLength(1);
+    expect(imageKey(images[0]!)).toBe(imageKey(big));
   });
 });
 

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import { z } from "zod";
 import { ColabStore } from "../src/colab-store.js";
-import { ColabRunner, type IdleTimer } from "../src/colab/runner.js";
+import { ColabRunner, type IdleTimer, secretForms } from "../src/colab/runner.js";
+import { buildPayload, REMOTE_RUN_USER } from "../src/colab/payload.js";
 import { openDb } from "../src/db/open.js";
+import type { Database } from "bun:sqlite";
 import type { CliResult, ColabCli, ColabConfig } from "../src/types.js";
 
 const config: Pick<ColabConfig, "auth" | "sessionName" | "idleMs" | "createTimeoutMs" | "outputMaxBytes" | "maxPerHour" | "env"> = {
@@ -35,9 +37,9 @@ const success = { exit_code: 0, timed_out: false, duration_ms: 7, stdout: { head
 
 type Exec = (stdin: string, n: number) => Promise<CliResult> | CliResult;
 
-function setup(o: { exec?: Exec; create?: () => CliResult; config?: Partial<typeof config>; now?: () => number } = {}) {
+function setup(o: { exec?: Exec; create?: () => CliResult; config?: Partial<typeof config>; now?: () => number; db?: Database } = {}) {
   const clock = manualTimer();
-  const db = openDb(":memory:");
+  const db = o.db ?? openDb(":memory:");
   const store = new ColabStore(db);
   const calls: string[][] = [];
   const statesAtCreate: (string | undefined)[] = [];
@@ -199,6 +201,40 @@ describe("ColabRunner", () => {
     expect((await t.runner.run(req)).exitCode).toBe(0);
   });
 
+  it("the hourly cap survives a restart (run times are kept in the db)", async () => {
+    let now = 1_000_000;
+    const db = openDb(":memory:");
+    const first = setup({ db, config: { maxPerHour: 2 }, now: () => now });
+    await first.runner.run(req);
+    now += 1000;
+    await first.runner.run(req);
+    const second = setup({ db, config: { maxPerHour: 2 }, now: () => now });
+    expect(() => second.runner.run(req)).toThrow(/at most 2 Python runs per hour/);
+    now = 1_000_000 + 3_600_001;
+    expect((await setup({ db, config: { maxPerHour: 2 }, now: () => now }).runner.run(req)).exitCode).toBe(0);
+    expect(db.query("SELECT COUNT(*) AS n FROM colab_exec").get()).toEqual({ n: 2 }); // the oldest run was pruned
+  });
+
+  it("masks the secret reversed and in base64, and in launcher errors and CLI output", async () => {
+    const key = "tvly-Secret+/?123";
+    const forms = [key, [...key].reverse().join(""), Buffer.from(key).toString("base64"), Buffer.from(key).toString("base64url")];
+    const leaked = { ...success, stdout: { head: forms.join(" "), tail: "", bytes: 80 } };
+    const t = setup({ config: { env: { TAVILY_API_KEY: key } }, exec: (stdin) => ok({ stdout: resultLine(stdin, leaked) }) });
+    const r = await t.runner.run(req);
+    for (const f of forms) expect(JSON.stringify(r)).not.toContain(f);
+    expect(secretForms([key])).toContain(Buffer.from(key).toString("base64").replace(/=+$/, ""));
+
+    const failed = setup({ config: { env: { TAVILY_API_KEY: key } }, exec: (stdin) => ok({ stdout: resultLine(stdin, { error: `KeyError('${key}')` }) }) });
+    const e1 = await failed.runner.run(req).catch((e: Error) => e.message);
+    expect(e1).toMatch(/launcher failed/);
+    expect(e1).not.toContain(key);
+
+    const lost = setup({ config: { env: { TAVILY_API_KEY: key } }, exec: () => ok({ code: 1, stderr: `env ${key}` }) });
+    const e2 = await lost.runner.run(req).catch((e: Error) => e.message);
+    expect(e2).toMatch(/did not run the file.*REDACTED/);
+    expect(e2).not.toContain(key);
+  });
+
   it("passes --auth before the subcommand when configured", async () => {
     const t = setup({ config: { auth: "adc" } });
     await t.runner.run(req);
@@ -211,5 +247,29 @@ describe("ColabRunner", () => {
     await t.runner.shutdown();
     expect(t.subs().at(-1)).toBe("stop");
     expect(t.store.load()).toBeUndefined();
+  });
+});
+
+const runPayloadLocally = (code: string) => Bun.spawnSync(["python3", "-"], { stdin: Buffer.from(code, "utf-8") });
+
+describe("buildPayload", () => {
+  const payload = (name = "a.py") => buildPayload({ name, source: "print('hi')", args: ["-c", "x"], env: {}, timeoutSeconds: 5, maxBytes: 100, marker: "@@M@@" });
+
+  it("runs the script as the unprivileged run user, by absolute path, and kills every process of that user afterwards", () => {
+    const code = payload("-c");
+    expect(code).toContain("[sys.executable, script, *a[\"args\"]]"); // never a[\"name\"]: a name like -c is no python option
+    expect(code).toContain("user=uid, group=gid, extra_groups=[]");
+    expect(code).toContain("/proc/");
+    expect(code).toContain("os.geteuid() != 0");
+    const packed = JSON.parse(Buffer.from(/__rain_fish_run\("([A-Za-z0-9+/=]+)"\)/.exec(code)![1]!, "base64").toString("utf-8"));
+    expect(packed.user).toBe(REMOTE_RUN_USER);
+    expect(packed.name).toBe("-c");
+  });
+
+  it.skipIf(process.getuid?.() === 0 || Bun.which("python3") === null)("refuses to run unisolated when the kernel is not root, with a result line", () => {
+    const r = runPayloadLocally(payload());
+    const line = r.stdout.toString().split("\n").find((l) => l.startsWith("@@M@@"))!;
+    expect(JSON.parse(line.slice(5)).error).toMatch(/not root.*unisolated/);
+    expect(r.stdout.toString()).not.toContain("hi\n");
   });
 });

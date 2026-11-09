@@ -144,3 +144,22 @@ describe("unlinkedNotes", () => {
     expect([...personaTree(fs)]).toEqual(["/persona.md"]);
   });
 });
+
+describe("agent write and search limits", () => {
+  it("a write refused for an over-deep path leaves no directory rows behind", async () => {
+    await expect(call("write", { path: `/deep/${"d/".repeat(40)}x.md`, content: "x" })).rejects.toThrow(/too deep/);
+    expect(env.fs.stat("/deep")).toBeUndefined();
+  });
+
+  it("a write refused by file-type rules leaves no directory rows behind", async () => {
+    await expect(call("write", { path: "/nodir/sub/evil.zip", content: "x" })).rejects.toThrow();
+    expect(env.fs.stat("/nodir")).toBeUndefined();
+  });
+
+  it("grep and find clamp a limit of 0 or less to 1", async () => {
+    env.fs.writeFile("/lim/a.md", "hit\nhit");
+    env.fs.writeFile("/lim/b.md", "hit");
+    expect(await call("grep", { pattern: "hit", path: "/lim", limit: 0 })).toMatch(/\[1 matches limit reached/);
+    expect(await call("find", { pattern: "*.md", path: "/lim", limit: -1 })).toMatch(/\[1 results limit reached/);
+  });
+});

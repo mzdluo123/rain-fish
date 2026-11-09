@@ -195,3 +195,24 @@ describe("Bot pictures", () => {
     expect(sent).toHaveLength(0);
   });
 });
+
+describe("Bot replies to synthetic ids", () => {
+  it("sendText omits the reply segment for a non-numeric id (poke) and still sends", async () => {
+    const { bot, sent } = setup();
+    await bot.sendText("100", "hi", "poke-1700000000-42");
+    expect(sent[0]!.message).toEqual([{ type: "text", data: { text: "hi" } }]);
+    await bot.sendText("100", "yo", "-55");
+    expect(sent[1]!.message[0]).toEqual({ type: "reply", data: { id: "-55" } });
+  });
+
+  it("sendImage omits the reply segment for a non-numeric id and still sends", async () => {
+    const store = new MessageStore(openDb(":memory:"));
+    const db = openDb(":memory:");
+    const images = new ImageStore(db);
+    const sent: OutboundSegment[][] = [];
+    const bot = new Bot({ store, images, responder: { notify() {} }, api: { sendGroupMessage: async (_g, m) => (sent.push(m), { messageId: "1" }) } });
+    const id = images.put("100", "m1", 0, Buffer.from([0x89, 0x50, 0x4e, 0x47]), "image/png");
+    await bot.sendImage("100", id, undefined, "poke-1-2");
+    expect(sent[0]!.some((s) => s.type === "reply")).toBe(false);
+  });
+});
