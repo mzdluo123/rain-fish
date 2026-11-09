@@ -1,6 +1,9 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { createAgent } from "../src/agent.js";
+import { unlinkedNotes } from "../src/context/persona.js";
+import { openDb } from "../src/db/open.js";
+import { VirtualFs } from "../src/vfs.js";
 import { makeEnv, markSeen } from "./helpers.js";
 
 const env = makeEnv();
@@ -112,5 +115,20 @@ describe("personaTree", () => {
     const tree = personaTree(fs);
     expect([...tree].sort()).toEqual(["/members/likes.md", "/members/milk.md", "/persona.md", "/rules.md"]);
     expect(personaTree(new VirtualFs(openDb(":memory:"))).has("/persona.md")).toBe(true); // even before the file exists
+  });
+});
+
+describe("unlinkedNotes", () => {
+  it("lists every .md file that cannot be reached from /persona.md by links, /wake-rules.md included; a cycle does not hide anything", () => {
+    const fs = new VirtualFs(openDb(":memory:"));
+    fs.writeFile("/persona.md", "[喜好](/members/likes.md)");
+    fs.writeFile("/members/likes.md", "[回去](/persona.md) [牛奶](/members/milk.md)");
+    fs.writeFile("/members/milk.md", "热的");
+    fs.writeFile("/wake-rules.md", "| 规则 |");
+    fs.writeFile("/other/b.md", "[a](/other/a.md)"); // a pair that only link each other
+    fs.writeFile("/other/a.md", "[b](/other/b.md)");
+    expect(unlinkedNotes(fs)).toEqual(["/other/a.md", "/other/b.md", "/wake-rules.md"]);
+    fs.writeFile("/persona.md", "[喜好](/members/likes.md) [其他](/other/a.md) [唤醒](/wake-rules.md)");
+    expect(unlinkedNotes(fs)).toEqual([]);
   });
 });

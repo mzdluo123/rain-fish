@@ -51,11 +51,11 @@ const LINK = /\]\((\/[^)\s#]+\.md)\)/g;
  * agent read from or wrote to these files is not history worth archiving: the files themselves are the truth, and an archived
  * old version would only contradict the current one.
  */
-export function personaTree(fs: Pick<VirtualFs, "exists" | "readText">): Set<string> {
+export function personaTree(fs: Pick<VirtualFs, "exists" | "readText">, limit = 200): Set<string> {
   const seen = new Set<string>([PERSONA_PATH]);
   const queue = [PERSONA_PATH];
   const done = new Set<string>();
-  while (queue.length > 0 && done.size < 200) {
+  while (queue.length > 0 && done.size < limit) {
     const p = queue.shift()!;
     if (done.has(p)) continue;
     done.add(p);
@@ -73,4 +73,17 @@ export function personaTree(fs: Pick<VirtualFs, "exists" | "readText">): Set<str
     }
   }
   return seen;
+}
+
+/**
+ * The Markdown files that the profile tree does not reach: every `.md` file of the filesystem that cannot be found by
+ * following absolute Markdown links from `/persona.md`, level by level (`/wake-rules.md` included: it must be linked too).
+ * Sorted by path. Walks the whole tree (no cap), so a big tree is never misjudged.
+ */
+export function unlinkedNotes(fs: Pick<VirtualFs, "exists" | "readText" | "walk">): string[] {
+  const reached = personaTree(fs, Infinity);
+  return fs
+    .walk("/")
+    .filter((e) => e.kind === "file" && /\.md$/i.test(e.path) && !reached.has(e.path))
+    .map((e) => e.path);
 }

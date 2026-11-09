@@ -55,13 +55,13 @@ function fakeSession(opts: { vision?: boolean; script?: Script } = {}) {
 // flushRatio 10 = the memory flush never triggers here; it has its own suite below
 const ctx: ContextConfig = { recentTokens: 1500, compactTokens: 6000, archiveTokens: 3000, flushRatio: 10 };
 
-async function setup(over: { vision?: boolean; script?: Script; context?: Partial<ContextConfig>; db?: ReturnType<typeof openDb>; group?: string; persona?: () => string | undefined; personaPaths?: () => ReadonlySet<string> } = {}) {
+async function setup(over: { vision?: boolean; script?: Script; context?: Partial<ContextConfig>; db?: ReturnType<typeof openDb>; group?: string; persona?: () => string | undefined; personaPaths?: () => ReadonlySet<string>; unlinked?: () => string[] } = {}) {
   const db = over.db ?? openDb(":memory:");
   const store = new ConversationStore(db);
   const rec = recordingLogger();
   const session = fakeSession(over);
   const trace = memoryEventLog();
-  const conv = await PiConversation.create({ groupId: over.group ?? "g1", session: session as never, store, context: { ...ctx, ...over.context }, logger: rec.logger, events: trace.events, persona: over.persona, personaPaths: over.personaPaths });
+  const conv = await PiConversation.create({ groupId: over.group ?? "g1", session: session as never, store, context: { ...ctx, ...over.context }, logger: rec.logger, events: trace.events, persona: over.persona, personaPaths: over.personaPaths, unlinked: over.unlinked });
   return { db, store, session, conv, entries: rec.entries, trace };
 }
 const roles = (s: { state: { messages: AgentMessage[] } }) => s.state.messages.map((m) => (isArchiveMessage(m) ? "archive" : m.role));
@@ -411,6 +411,43 @@ describe("reminder to send", () => {
     const flaky = await setup({ script: (_p, n) => (n === 1 ? [assistantText("我在")] : [assistantError("rate limited")]) });
     expect(await flaky.conv.ask("@你", { addressed: true })).toBe("我在");
     expect(prompts(flaky.session)).toHaveLength(1); // the failed reminder turn left no trace
+  });
+});
+
+describe("link check", () => {
+  const prompts = (s: { state: { messages: AgentMessage[] } }) => s.state.messages.filter((m) => m.role === "user").map((m) => String(m.content));
+  const writeCall = (n: number): AgentMessage[] => [assistantCall(`w${n}`, "write", { path: "/x.md", content: "x" }), toolResultMsg(`w${n}`, "write", "ok"), assistantText("写好了")];
+
+  it("every run starts with the notice while a note is unlinked, and stops when the tree is complete", async () => {
+    let orphans = ["/x.md"];
+    const { conv, session } = await setup({ unlinked: () => orphans });
+    await conv.ask("a");
+    await conv.ask("b");
+    expect(prompts(session)[0]).toContain("/x.md");
+    expect(prompts(session)[1]).toContain("/x.md");
+    orphans = [];
+    await conv.ask("c");
+    expect(prompts(session)[2]).toBe("c");
+  });
+
+  it("a run that wrote a file gets one reminder turn when the check still finds unlinked notes; no write, no reminder turn", async () => {
+    const wrote = await setup({ script: (_p, n) => (n === 1 ? writeCall(n) : [assistantText("好")]), unlinked: () => ["/x.md"] });
+    await wrote.conv.ask("a");
+    expect(prompts(wrote.session)).toHaveLength(2);
+    expect(prompts(wrote.session)[1]).toContain("/persona.md");
+
+    const fixed = await setup({ script: (_p, n) => writeCall(n), unlinked: () => [] });
+    await fixed.conv.ask("a");
+    expect(prompts(fixed.session)).toHaveLength(1);
+
+    const idle = await setup({ unlinked: () => ["/x.md"] });
+    await idle.conv.ask("a");
+    expect(prompts(idle.session)).toHaveLength(1); // only the run-start notice
+  });
+
+  it("a throwing check never blocks the run", async () => {
+    const { conv } = await setup({ unlinked: () => { throw new Error("db busy"); } });
+    await expect(conv.ask("a")).resolves.toBe("好的");
   });
 });
 

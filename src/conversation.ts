@@ -5,7 +5,7 @@ import { buildArchiveMessage, canReadImages, extendArchiveSource, serializeForAr
 import { estimateContextTokens, estimateMessageTokens, estimateTextTokens } from "./context/estimate.js";
 import { imageBlockTokens } from "./context/image-size.js";
 import { MEMORY_FLUSH_PROMPT } from "./context/memory.js";
-import { SEND_NUDGE_PROMPT, SPEAK_NUDGE_PROMPT } from "./context/nudge.js";
+import { linkNotice, linkNudgePrompt, SEND_NUDGE_PROMPT, SPEAK_NUDGE_PROMPT } from "./context/nudge.js";
 import { personaPinMessage } from "./context/persona.js";
 import type { ConversationStore } from "./conversation-store.js";
 import { noopLogger } from "./logger.js";
@@ -31,6 +31,8 @@ export interface PiConversationDeps {
   persona?: () => string | undefined;
   /** Paths of the profile files (entry + linked notes); the archive leaves out what the agent read from and wrote to them. Called when compacting. */
   personaPaths?: () => ReadonlySet<string>;
+  /** `.md` files that `/persona.md` does not reach by links (empty = the tree is complete). Called at the start of every run and after a run that wrote files. */
+  unlinked?: () => string[];
 }
 
 /**
@@ -84,9 +86,15 @@ export class PiConversation implements Conversation {
     this.refreshPersona();
     const images = this.acceptsImages ? ctx.images : undefined; // a text-only model would reject the request
     try {
+      const unlinked = this.unlinkedNotes();
+      if (unlinked.length > 0) {
+        prompt = `${prompt}\n\n${linkNotice(unlinked)}`; // appended at the very end of the user turn: the cached prefix is untouched
+        this.emit("links.unlinked", { count: unlinked.length, when: "run start" });
+      }
       await this.flushMemoryIfNeeded(prompt, imageTokens(images));
       await this.compactIfNeeded(prompt, imageTokens(images));
       const first = await this.runTurn(prompt, "message", images);
+      if (first.wrote) await this.linkReminder();
       if ((!ctx.addressed && !ctx.mustSpeak) || first.sent) return first.text;
       // Someone addressed the agent (or it was told it must speak), it wrote text instead of calling `send`: nobody saw it. One
       // reminder turn; a failure of that extra turn is not fatal (the first turn is already persisted and was a valid run).
@@ -114,6 +122,29 @@ export class PiConversation implements Conversation {
     }
   }
 
+  /** The `.md` files outside the profile tree. A failing check is logged and counts as "nothing to report" (it must never block a run). */
+  private unlinkedNotes(): string[] {
+    try {
+      return this.d.unlinked?.() ?? [];
+    } catch (err) {
+      this.log.warn(`group ${this.d.groupId}: could not check the note links: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  /** After a turn that created or wrote files: run the full check; if something is not linked, give the agent one turn to fix it. A failed turn is not fatal. */
+  private async linkReminder(): Promise<void> {
+    const paths = this.unlinkedNotes();
+    if (paths.length === 0) return;
+    this.log.warn(`group ${this.d.groupId}: ${paths.length} note(s) not linked from the persona tree; reminding once`);
+    this.emit("turn.nudge", { reason: "unlinked notes", count: paths.length });
+    try {
+      await this.runTurn(linkNudgePrompt(paths), "nudge");
+    } catch (err) {
+      this.log.warn(`group ${this.d.groupId}: link reminder turn failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   /** Re-reads the persona file. A failure keeps the previous text (the agent must not lose its profile over a hiccup). */
   private refreshPersona(): void {
     if (!this.d.persona) return;
@@ -131,7 +162,7 @@ export class PiConversation implements Conversation {
   }
 
   /** One model turn: the prompt, the agent's whole tool loop, then persistence. A failed turn leaves no trace. */
-  private async runTurn(prompt: string, kind: "message" | "flush" | "nudge", images?: ImageContent[]): Promise<{ text: string; sent: boolean }> {
+  private async runTurn(prompt: string, kind: "message" | "flush" | "nudge", images?: ImageContent[]): Promise<{ text: string; sent: boolean; wrote: boolean }> {
     const state = this.d.session.agent.state;
     const from = state.messages.length;
     this.cur = { ...this.cur, turn: `t${++this.turnCount}`, kind };
@@ -167,7 +198,8 @@ export class PiConversation implements Conversation {
       persisted_through_seq: this.seqs.at(-1),
     });
     const sent = added.some((m) => m.role === "toolResult" && SPEAK_TOOLS.includes(m.toolName) && !m.isError);
-    return { text, sent };
+    const wrote = added.some((m) => m.role === "toolResult" && (m.toolName === "write" || m.toolName === "edit") && !m.isError);
+    return { text, sent, wrote };
   }
 
   /**
@@ -234,9 +266,10 @@ export class PiConversation implements Conversation {
     const tools = session.getActiveToolNames();
     session.setActiveToolsByName(tools.filter((n) => !SPEAK_TOOLS.includes(n)));
     try {
-      await this.runTurn(MEMORY_FLUSH_PROMPT, "flush");
+      const flush = await this.runTurn(MEMORY_FLUSH_PROMPT, "flush");
       this.flushed = true;
       this.d.store.setFlushed(groupId);
+      if (flush.wrote) await this.linkReminder(); // the flush turn writes files too; still without the speak tools
       this.log.success(`group ${groupId}: memory flush done`);
       this.emit("flush.ok", { ms: Date.now() - t0 });
       this.emit("conv.state", { from: "flushing", to: "flushed", reason: "flush turn done" });
