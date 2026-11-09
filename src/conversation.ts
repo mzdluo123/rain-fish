@@ -31,6 +31,8 @@ export interface PiConversationDeps {
   events?: EventLog;
   /** Per-run caps (messages posted, Python runs); each is reset at the start of every run and reminder turn. */
   budgets?: readonly Pick<RunBudget, "reset">[];
+  /** Makes `send`/`send_image` fail with a tool error while muted (the memory-flush turn). The tool list itself never changes: that would break the prompt cache. */
+  speech?: Pick<RunBudget, "mute" | "unmute">;
   /** The agent's self-profile (its `/persona.md`), pinned at the top of every request; undefined = none yet. Read once per run. */
   persona?: () => string | undefined;
   /** Paths of the profile files (entry + linked notes); the archive leaves out what the agent read from and wrote to them. Called when compacting. */
@@ -262,7 +264,7 @@ export class PiConversation implements Conversation {
    * A failed flush is logged and not fatal: the context must still be bounded.
    */
   private async flushMemoryIfNeeded(prompt: string, imageTokens = 0): Promise<void> {
-    const { session, context: c, groupId } = this.d;
+    const { context: c, groupId } = this.d;
     if (this.flushed) return;
     const tokens = this.contextTokens(prompt, imageTokens);
     const threshold = c.compactTokens * c.flushRatio;
@@ -272,8 +274,7 @@ export class PiConversation implements Conversation {
     this.emit("flush.start", { tokens, threshold, compact_at: c.compactTokens });
     this.emit("conv.state", { from: "fresh", to: "flushing", reason: "context near compaction" });
     const t0 = Date.now();
-    const tools = session.getActiveToolNames();
-    session.setActiveToolsByName(tools.filter((n) => !SPEAK_TOOLS.includes(n)));
+    this.d.speech?.mute();
     try {
       const flush = await this.runTurn(MEMORY_FLUSH_PROMPT, "flush");
       this.flushed = true;
@@ -287,7 +288,7 @@ export class PiConversation implements Conversation {
       this.emit("flush.fail", { ms: Date.now() - t0, error: err });
       this.emit("conv.state", { from: "flushing", to: "fresh", reason: "flush failed, retried on the next message" });
     } finally {
-      session.setActiveToolsByName(tools);
+      this.d.speech?.unmute();
       this.cur = { run: this.cur.run }; // the flush turn is over: later events (compaction, the real turn) are not part of it
     }
   }

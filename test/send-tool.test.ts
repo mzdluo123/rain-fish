@@ -46,6 +46,18 @@ describe("send tool", () => {
     expect(env.sent).toHaveLength(3);
   });
 
+  it("refuses to post while muted (a tool error, nothing sent) and works again after unmute, whatever reset does", async () => {
+    const env = { ...makeEnv(), budget: new RunBudget(6, 0) };
+    const send = await tool(env, "send");
+    env.budget.mute();
+    env.budget.reset();
+    await expect(send.execute("t", { text: "x" } as never)).rejects.toThrow(/not possible in this turn/);
+    expect(env.sent).toEqual([]);
+    env.budget.unmute();
+    await send.execute("t", { text: "y" } as never);
+    expect(env.sent).toHaveLength(1);
+  });
+
   it("waits between the messages of a run", async () => {
     const waits: number[] = [];
     const env = { ...makeEnv(), budget: new RunBudget(6, 700, async (ms) => void waits.push(ms)) };

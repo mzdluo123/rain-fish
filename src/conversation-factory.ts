@@ -92,7 +92,7 @@ export async function createPiConversationFactory(db: Database, config: Config, 
       modelRuntime: runtime,
       thinkingLevel: config.thinkingLevel,
     });
-    const conversation = await PiConversation.create({ groupId, session, store: conversations, context: config.context, cacheCompact: config.cacheCompact, logger, events, budgets: [budget, pythonCount], persona: () => (fs.exists(PERSONA_PATH) ? fs.readText(PERSONA_PATH) : undefined), personaPaths: () => personaTree(fs), unlinked: () => unlinkedNotes(fs) });
+    const conversation = await PiConversation.create({ groupId, session, store: conversations, context: config.context, cacheCompact: config.cacheCompact, logger, events, budgets: [budget, pythonCount], speech: budget, persona: () => (fs.exists(PERSONA_PATH) ? fs.readText(PERSONA_PATH) : undefined), personaPaths: () => personaTree(fs), unlinked: () => unlinkedNotes(fs) });
     let llmStarted = Date.now();
     session.subscribe((event) => {
       if (event.type === "tool_execution_start") toolLog.debug(`${event.toolName} ${JSON.stringify(event.args)}`);
