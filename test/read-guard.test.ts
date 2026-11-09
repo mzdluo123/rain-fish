@@ -85,9 +85,9 @@ describe("edit and overwriting write need the file in the context window", () =>
     await expect(edit("/x.txt")).rejects.toThrow(/only Markdown/);
   });
 
-  it("covers every .md file, the wake rules and the profile included", async () => {
+  it("covers every file the agent may write: .md (the profile included) and the wake rules", async () => {
     env.fs.writeFile(WAKE_RULES_PATH, renderWakeRules(DEFAULT_RULES));
-    await expect(edit(WAKE_RULES_PATH, "| closing | 0.8 |", "| closing | 0.4 |")).rejects.toThrow(/have not read/);
+    await expect(edit(WAKE_RULES_PATH, "weight: 0.8", "weight: 0.4")).rejects.toThrow(/have not read/);
     env.fs.writeFile("/persona.md", "alpha");
     await expect(edit("/persona.md")).rejects.toThrow(/have not read/);
   });
@@ -147,9 +147,9 @@ describe("write over an existing file", () => {
     await expect(overwrite("/x.txt")).rejects.toThrow(/only Markdown/);
   });
 
-  it("the content rules still apply after the read (a broken wake-rules table is refused)", async () => {
+  it("the content rules still apply after the read (broken wake rules are refused)", async () => {
     env.fs.writeFile(WAKE_RULES_PATH, renderWakeRules(DEFAULT_RULES));
     markSeen(session, WAKE_RULES_PATH);
-    await expect(overwrite(WAKE_RULES_PATH, "no table")).rejects.toThrow(/no table found/);
+    await expect(overwrite(WAKE_RULES_PATH, "rules: [")).rejects.toThrow(/was not changed/);
   });
 });

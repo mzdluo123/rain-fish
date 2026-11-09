@@ -143,7 +143,7 @@ export interface PiResponderOptions {
   speakEveryRuns?: number;
   /** Where the per-group run counter is kept so the rhythm survives a restart; omit to keep it in memory only. */
   speakStore?: SpeakStore;
-  /** Weight of a message for the heat of the chat (the agent's `/wake-rules.md`); omit for the default table. */
+  /** Weight of a message for the heat of the chat (the agent's `/wake-rules.yaml`); omit for the default table. */
   weigh?: WeighFn;
   /** Uniform [0, 1) source; replaceable in tests. */
   random?: () => number;

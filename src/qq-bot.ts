@@ -55,7 +55,7 @@ if (colab) {
 const makeConversation = await orExit(logger, () =>
   createPiConversationFactory(db, config, logger, (groupId, text, replyTo) => bot.sendText(groupId, text, replyTo), (groupId, imageId, text, replyTo) => bot.sendImage(groupId, imageId, text, replyTo), events, colab && ((req) => colab.run(req))),
 );
-const wakeRules = createWakeRules({ fs: new VirtualFs(db), logger }); // /wake-rules.md in the agent's filesystem: created if missing, reloaded when the agent edits it
+const wakeRules = createWakeRules({ fs: new VirtualFs(db), logger }); // /wake-rules.yaml in the agent's filesystem: created if missing, reloaded when the agent edits it
 const responder = new PiResponder(
   makeConversation,
   { wake: config.wake, weigh: wakeRules.weigh, speakEveryRuns: config.speakEveryRuns, speakStore: new SpeakStore(db), pending: new PendingStore(db), images: promptImages, pictures, logger, events },

@@ -88,7 +88,7 @@ export function personaTree(fs: Pick<VirtualFs, "exists" | "readText">, limit = 
 
 /**
  * The agent's files that the profile tree does not reach: every `.md` and `.py` file of the filesystem that cannot be found by
- * following absolute Markdown links from `/persona.md`, level by level (`/wake-rules.md` included: it must be linked too).
+ * following absolute Markdown links from `/persona.md`, level by level.
  * Sorted by path. Walks the whole tree (no cap), so a big tree is never misjudged.
  */
 export function unlinkedNotes(fs: Pick<VirtualFs, "exists" | "readText" | "walk">): string[] {
