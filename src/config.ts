@@ -94,6 +94,29 @@ export const configSchema = z
     SEND_MAX_PER_RUN: z.coerce.number().int().positive().default(6),
     /** Pause before the second and later message of a run, ms (looks less robotic, stays under QQ's rate limits). */
     SEND_GAP_MS: z.coerce.number().int().nonnegative().default(800),
+    // --- Python on Google Colab (`run_python`) ---
+    /** Gives the agent `run_python`: a VFS .py file runs on a Colab CPU machine (never on this host). Needs the `colab` CLI, logged in. */
+    COLAB_ENABLED: flag(false),
+    /** The `colab` executable (google-colab-cli). Started with a fixed argument list, never through a shell. */
+    COLAB_CLI_PATH: z.string().min(1).default("colab"),
+    /** `colab --auth`: oauth2 or adc. Unset: the CLI's default. */
+    COLAB_AUTH: z.enum(["oauth2", "adc"]).optional(),
+    /** Name of the one Colab session this program owns (`colab -s`). */
+    COLAB_SESSION_NAME: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/, "letters, digits, _ and - only").default("rain-fish"),
+    /** Wall-clock limit of a run when the agent does not choose one. */
+    COLAB_EXEC_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(60),
+    /** The longest limit the agent may choose. */
+    COLAB_EXEC_MAX_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(300),
+    /** The machine is released after this long without a run (it is created again by the next one). */
+    COLAB_IDLE_SECONDS: z.coerce.number().int().positive().default(900),
+    /** `colab new` may take this long. */
+    COLAB_CREATE_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(180),
+    /** Per stream (stdout, stderr): at most this many bytes are returned (head + tail, the middle is cut). */
+    COLAB_OUTPUT_MAX_BYTES: z.coerce.number().int().positive().default(8000),
+    /** Runs per agent run. */
+    COLAB_EXEC_MAX_PER_RUN: z.coerce.number().int().positive().default(3),
+    /** Runs per hour, all groups together. */
+    COLAB_EXEC_MAX_PER_HOUR: z.coerce.number().int().positive().default(30),
     // --- execution trace (structured, rotating event log) ---
     TRACE_ENABLED: flag(true),
     /** Directory of the trace files (`agent.jsonl` + rotated `agent.<time>.jsonl.gz`). */
@@ -147,6 +170,19 @@ export const configSchema = z
       maxPerRun: e.SEND_MAX_PER_RUN,
       gapMs: e.SEND_GAP_MS,
     },
+    colab: {
+      enabled: e.COLAB_ENABLED,
+      cliPath: e.COLAB_CLI_PATH,
+      auth: e.COLAB_AUTH,
+      sessionName: e.COLAB_SESSION_NAME,
+      execTimeoutSeconds: e.COLAB_EXEC_TIMEOUT_SECONDS,
+      execMaxTimeoutSeconds: e.COLAB_EXEC_MAX_TIMEOUT_SECONDS,
+      idleMs: e.COLAB_IDLE_SECONDS * 1000,
+      createTimeoutMs: e.COLAB_CREATE_TIMEOUT_SECONDS * 1000,
+      outputMaxBytes: e.COLAB_OUTPUT_MAX_BYTES,
+      maxPerRun: e.COLAB_EXEC_MAX_PER_RUN,
+      maxPerHour: e.COLAB_EXEC_MAX_PER_HOUR,
+    },
     backfill: {
       minMessages: e.BACKFILL_MIN_MESSAGES,
       maxAgeSeconds: e.BACKFILL_MAX_AGE_DAYS * 86_400,
@@ -164,6 +200,10 @@ export const configSchema = z
   .refine((c) => c.context.recentTokens + c.context.archiveTokens < c.context.compactTokens, {
     path: ["CONTEXT_COMPACT_TOKENS"],
     message: "must be larger than CONTEXT_RECENT_TOKENS + CONTEXT_ARCHIVE_TOKENS, or compaction could not get below it",
+  })
+  .refine((c) => c.colab.execTimeoutSeconds <= c.colab.execMaxTimeoutSeconds, {
+    path: ["COLAB_EXEC_TIMEOUT_SECONDS"],
+    message: "must not be larger than COLAB_EXEC_MAX_TIMEOUT_SECONDS",
   });
 
 /** Validates environment variables once, at startup; throws a readable error on bad values. */

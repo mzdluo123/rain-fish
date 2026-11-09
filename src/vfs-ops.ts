@@ -2,24 +2,29 @@ import type { VfsOperations } from "./types.js";
 import { VirtualFs } from "./vfs.js";
 import { validateWakeRulesWrite, WAKE_RULES_PATH } from "./wake-rules.js";
 
-/** Largest Markdown file the agent may create or modify (10 KiB). Bigger notes must be split into linked files. */
+/** Largest file (Markdown note or Python script) the agent may create or modify (10 KiB). Bigger notes must be split into linked files. */
 export const AGENT_MAX_FILE_BYTES = 10 * 1024;
 
+const PYTHON_FILE = /\.py$/i;
+
 /**
- * What the agent may write: Markdown files only, each at most `AGENT_MAX_FILE_BYTES`. The error text is
- * the agent's only instruction when it hits the size limit, so it spells out how to reorganise.
+ * What the agent may write: Markdown notes and Python scripts (for `run_python`), each at most `AGENT_MAX_FILE_BYTES`. The error
+ * text is the agent's only instruction when it hits the size limit, so it spells out how to reorganise.
  */
-function assertMarkdownPath(n: string): void {
-  if (!/\.md$/i.test(n)) {
-    throw new Error(`EINVAL: only Markdown files can be created or modified, and '${n}' is not a .md file. Use a file name ending in .md.`);
+function assertAgentFileType(n: string): void {
+  if (!/\.md$/i.test(n) && !PYTHON_FILE.test(n)) {
+    throw new Error(`EINVAL: only Markdown (.md) and Python (.py) files can be created or modified, and '${n}' is neither. Use a file name ending in .md (notes) or .py (scripts).`);
   }
 }
 
 export function assertAgentWritable(p: string, content: string | Uint8Array): void {
   const n = VirtualFs.normalize(p);
-  assertMarkdownPath(n);
+  assertAgentFileType(n);
   if (n === WAKE_RULES_PATH) validateWakeRulesWrite(content); // a table that does not parse is never written
   const bytes = typeof content === "string" ? Buffer.byteLength(content, "utf-8") : content.byteLength;
+  if (bytes > AGENT_MAX_FILE_BYTES && PYTHON_FILE.test(n)) {
+    throw new Error(`EFBIG: '${n}' would be ${bytes} bytes, over the ${AGENT_MAX_FILE_BYTES}-byte (10 KB) limit for one file. Nothing was written. Make the script shorter: run_python uploads only this one file.`);
+  }
   if (bytes > AGENT_MAX_FILE_BYTES) {
     throw new Error(
       `EFBIG: '${n}' would be ${bytes} bytes, over the ${AGENT_MAX_FILE_BYTES}-byte (10 KB) limit for one file. Nothing was written. ` +
@@ -47,7 +52,7 @@ export function createVfsOperations(vfs: VirtualFs, opts: { requireSeen?: (p: st
     write: {
       writeFile: async (p, content) => {
         const n = VirtualFs.normalize(p);
-        assertMarkdownPath(n);
+        assertAgentFileType(n);
         if (vfs.stat(n)?.kind === "file") opts.requireSeen?.(n); // overwriting needs the current text in view; creating a file does not
         assertAgentWritable(p, content);
         vfs.writeFile(p, content);
@@ -57,7 +62,7 @@ export function createVfsOperations(vfs: VirtualFs, opts: { requireSeen?: (p: st
     edit: {
       readFile: async (p) => vfs.readFile(p),
       writeFile: async (p, content) => (assertAgentWritable(p, content), vfs.writeFile(p, content)),
-      access: async (p) => (requireExists(p), assertMarkdownPath(VirtualFs.normalize(p)), opts.requireSeen?.(p)),
+      access: async (p) => (requireExists(p), assertAgentFileType(VirtualFs.normalize(p)), opts.requireSeen?.(p)),
     },
     ls: {
       exists: (p) => vfs.exists(p),

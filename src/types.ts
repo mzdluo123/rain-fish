@@ -149,6 +149,78 @@ export interface AgentDeps {
   budget: RunBudget;
   /** Scales pictures down before the model sees them (`view_image`); omit to show them as stored. */
   modelImage?: ModelImageFn;
+  /** Runs Python files on the remote Colab machine (`run_python`); omit and the tool does not exist. */
+  python?: PythonTool;
+}
+
+// ---- Python on Google Colab (`run_python`) -------------------------------------------
+
+export type ColabConfig = Config["colab"];
+
+/** One Python file to run on the Colab machine. The host only ships the text; it never executes it. */
+export interface PythonRunRequest {
+  /** File name on the remote side (the VFS basename, ends in `.py`). */
+  name: string;
+  source: string;
+  /** Wall-clock limit of the script; it is killed (with everything it started) when it runs out. */
+  timeoutSeconds: number;
+  /** Per stream, bytes returned (head + tail); omitted = `COLAB_OUTPUT_MAX_BYTES`. */
+  maxOutputBytes?: number;
+  signal?: AbortSignal;
+  /** For logs and the trace only. */
+  group?: string;
+  callId?: string;
+}
+
+/** One output stream of a run: `head` (and, if the middle was cut, `tail`) of `bytes` bytes in total. */
+export interface StreamOutput {
+  head: string;
+  /** Empty unless the stream was longer than the limit. */
+  tail: string;
+  bytes: number;
+}
+
+export interface PythonRunResult {
+  /** Exit status; negative = killed by that signal (a timed-out script is SIGKILLed: -9). */
+  exitCode: number;
+  timedOut: boolean;
+  durationMs: number;
+  stdout: StreamOutput;
+  stderr: StreamOutput;
+}
+
+export type RunPythonFn = (req: PythonRunRequest) => Promise<PythonRunResult>;
+
+/** What the `run_python` tool needs. `count` caps runs per agent run (reset by the conversation). */
+export interface PythonTool {
+  run: RunPythonFn;
+  defaultTimeoutSeconds: number;
+  maxTimeoutSeconds: number;
+  /** `COLAB_OUTPUT_MAX_BYTES`, shown to the agent as the default of `max_output_bytes`. */
+  defaultOutputBytes: number;
+  count: { acquire(): void; reset(): void; readonly used: number; readonly max: number };
+}
+
+/** Result of one `colab` CLI invocation. `timedOut`/`aborted`: this program killed it. */
+export interface CliResult {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+  aborted: boolean;
+}
+
+/** Runs the `colab` CLI with a fixed argument vector (never through a shell); `stdin` is piped in, absent = closed. */
+export interface ColabCli {
+  run(args: readonly string[], opts: { stdin?: string; timeoutMs: number; signal?: AbortSignal }): Promise<CliResult>;
+}
+
+/** The Colab runtime this program may have assigned, persisted so a restart can reuse or release it (`colab_runtime`). */
+export interface ColabRuntimeRow {
+  name: string;
+  state: "creating" | "ready";
+  createdAt: number;
+  lastUsedAt: number;
 }
 
 // ---- QQ wire types (validated at the WebSocket edge, derived from schemas) --------

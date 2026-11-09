@@ -43,15 +43,17 @@ export function personaPinMessage(text: string): AgentMessage {
   return { role: "user", content: `${lead}\n\n${element("persona", {}, body)}`, timestamp: 0 };
 }
 
-/** Where the agent keeps linked notes: `[text](/dir/file.md)` with an absolute path (what the prompt tells it to write). */
-const LINK = /\]\((\/[^)\s#]+\.md)\)/g;
+/** Where the agent keeps linked files: `[text](/dir/file.md)` with an absolute path (what the prompt tells it to write); scripts are linked the same way (`.py`). */
+const LINK = /\]\((\/[^)\s#]+\.(?:md|py))\)/gi;
+const MARKDOWN = /\.md$/i;
+/** The agent's own files that must hang in the tree: notes and the scripts it runs with `run_python`. */
+const TREE_FILE = /\.(?:md|py)$/i;
 
 /**
- * The paths of the agent's self-profile: the entry file and every `.md` file reachable from it by links (at most 200). What the
- * agent read from or wrote to these files is not history worth archiving: the files themselves are the truth, and an archived
- * old version would only contradict the current one.
+ * Every path reachable from `/persona.md` by absolute links, `.md` and `.py` targets alike (only Markdown files are opened and
+ * followed: a script's text is code, not links). `limit` caps how many notes are opened.
  */
-export function personaTree(fs: Pick<VirtualFs, "exists" | "readText">, limit = 200): Set<string> {
+function linkedPaths(fs: Pick<VirtualFs, "exists" | "readText">, limit: number): Set<string> {
   const seen = new Set<string>([PERSONA_PATH]);
   const queue = [PERSONA_PATH];
   const done = new Set<string>();
@@ -69,21 +71,30 @@ export function personaTree(fs: Pick<VirtualFs, "exists" | "readText">, limit = 
     for (const m of text.matchAll(LINK)) {
       const linked = path.posix.normalize(m[1]!);
       seen.add(linked);
-      queue.push(linked);
+      if (MARKDOWN.test(linked)) queue.push(linked);
     }
   }
   return seen;
 }
 
 /**
- * The Markdown files that the profile tree does not reach: every `.md` file of the filesystem that cannot be found by
+ * The paths of the agent's self-profile: the entry file and every `.md` file reachable from it by links (at most 200). What the
+ * agent read from or wrote to these files is not history worth archiving: the files themselves are the truth, and an archived
+ * old version would only contradict the current one. Linked scripts are not part of it: their runs are history.
+ */
+export function personaTree(fs: Pick<VirtualFs, "exists" | "readText">, limit = 200): Set<string> {
+  return new Set([...linkedPaths(fs, limit)].filter((p) => MARKDOWN.test(p)));
+}
+
+/**
+ * The agent's files that the profile tree does not reach: every `.md` and `.py` file of the filesystem that cannot be found by
  * following absolute Markdown links from `/persona.md`, level by level (`/wake-rules.md` included: it must be linked too).
  * Sorted by path. Walks the whole tree (no cap), so a big tree is never misjudged.
  */
 export function unlinkedNotes(fs: Pick<VirtualFs, "exists" | "readText" | "walk">): string[] {
-  const reached = personaTree(fs, Infinity);
+  const reached = linkedPaths(fs, Infinity);
   return fs
     .walk("/")
-    .filter((e) => e.kind === "file" && /\.md$/i.test(e.path) && !reached.has(e.path))
+    .filter((e) => e.kind === "file" && TREE_FILE.test(e.path) && !reached.has(e.path))
     .map((e) => e.path);
 }

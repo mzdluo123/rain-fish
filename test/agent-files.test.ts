@@ -32,6 +32,12 @@ describe("agent file limits: Markdown only", () => {
     await call("write", { path: "/members/alice.md", content: "# Alice\n喜欢热牛奶" });
     expect(env.fs.readText("/members/alice.md")).toContain("热牛奶");
   });
+
+  it("accepts .py scripts too, under the same size limit", async () => {
+    await call("write", { path: "/scripts/calc.py", content: "print(6*7)\n" });
+    expect(env.fs.readText("/scripts/calc.py")).toBe("print(6*7)\n");
+    await expect(call("write", { path: "/scripts/big.py", content: "#".repeat(AGENT_MAX_FILE_BYTES + 1) })).rejects.toThrow(/EFBIG.*run_python uploads only this one file/);
+  });
 });
 
 describe("agent file limits: 10 KB per file", () => {

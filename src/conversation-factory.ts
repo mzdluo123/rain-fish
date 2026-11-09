@@ -7,7 +7,8 @@ import { ConversationStore } from "./conversation-store.js";
 import { createModelRuntime, resolveModel } from "./model.js";
 import { MessageStore } from "./store.js";
 import { noopEventLog } from "./trace/event-log.js";
-import type { Config, EventLog, GroupImageSender, GroupSender, Logger } from "./types.js";
+import type { Config, EventLog, GroupImageSender, GroupSender, Logger, PythonTool, RunPythonFn } from "./types.js";
+import { PythonRunCount } from "./tools/run-python.js";
 import { ImageStore } from "./image-store.js";
 import { RunBudget } from "./run-budget.js";
 import { PERSONA_PATH, personaTree, seedPersona, unlinkedNotes } from "./context/persona.js";
@@ -46,7 +47,8 @@ function logLlmCall(log: Logger, groupId: string, m: AssistantMessage, ms: numbe
   if (text) log.debug(`group ${groupId}: text: ${text.length > 300 ? `${text.slice(0, 300)}…` : text}`);
 }
 
-export async function createPiConversationFactory(db: Database, config: Config, logger: Logger, send: GroupSender, sendImage: GroupImageSender, events: EventLog = noopEventLog) {
+/** `runPython`: the shared Colab runner (`ColabRunner.run`); omitted = the agent has no `run_python`. */
+export async function createPiConversationFactory(db: Database, config: Config, logger: Logger, send: GroupSender, sendImage: GroupImageSender, events: EventLog = noopEventLog, runPython?: RunPythonFn) {
   loadSystemPrompt(config.promptFile); // fail at startup, not on the first message
   const runtime = await createModelRuntime();
   const model = config.model ? resolveModel(runtime, config.model) : undefined;
@@ -67,6 +69,14 @@ export async function createPiConversationFactory(db: Database, config: Config, 
   return async (groupId: string): Promise<PiConversation> => {
     // Re-read per conversation: an edit applies to groups whose conversation starts after it.
     const budget = new RunBudget(config.send.maxPerRun, config.send.gapMs);
+    const pythonCount = new PythonRunCount(config.colab.maxPerRun);
+    const python: PythonTool | undefined = runPython && {
+      run: (req) => runPython({ ...req, group: groupId }),
+      defaultTimeoutSeconds: config.colab.execTimeoutSeconds,
+      maxTimeoutSeconds: config.colab.execMaxTimeoutSeconds,
+      defaultOutputBytes: config.colab.outputMaxBytes,
+      count: pythonCount,
+    };
     const { session } = await createAgent({
       systemPrompt: loadSystemPrompt(config.promptFile),
       fs,
@@ -77,11 +87,12 @@ export async function createPiConversationFactory(db: Database, config: Config, 
       images,
       budget,
       modelImage,
+      python,
       model,
       modelRuntime: runtime,
       thinkingLevel: config.thinkingLevel,
     });
-    const conversation = await PiConversation.create({ groupId, session, store: conversations, context: config.context, logger, events, budget, persona: () => (fs.exists(PERSONA_PATH) ? fs.readText(PERSONA_PATH) : undefined), personaPaths: () => personaTree(fs), unlinked: () => unlinkedNotes(fs) });
+    const conversation = await PiConversation.create({ groupId, session, store: conversations, context: config.context, logger, events, budgets: [budget, pythonCount], persona: () => (fs.exists(PERSONA_PATH) ? fs.readText(PERSONA_PATH) : undefined), personaPaths: () => personaTree(fs), unlinked: () => unlinkedNotes(fs) });
     let llmStarted = Date.now();
     session.subscribe((event) => {
       if (event.type === "tool_execution_start") toolLog.debug(`${event.toolName} ${JSON.stringify(event.args)}`);

@@ -25,13 +25,13 @@ export interface PiConversationDeps {
   context: ContextConfig;
   logger?: Logger;
   events?: EventLog;
-  /** Caps the messages posted per run; reset at the start of every run and reminder turn. */
-  budget?: RunBudget;
+  /** Per-run caps (messages posted, Python runs); each is reset at the start of every run and reminder turn. */
+  budgets?: readonly Pick<RunBudget, "reset">[];
   /** The agent's self-profile (its `/persona.md`), pinned at the top of every request; undefined = none yet. Read once per run. */
   persona?: () => string | undefined;
   /** Paths of the profile files (entry + linked notes); the archive leaves out what the agent read from and wrote to them. Called when compacting. */
   personaPaths?: () => ReadonlySet<string>;
-  /** `.md` files that `/persona.md` does not reach by links (empty = the tree is complete). Called at the start of every run and after a run that wrote files. */
+  /** `.md`/`.py` files that `/persona.md` does not reach by links (empty = the tree is complete). Called at the start of every run and after a run that wrote files. */
   unlinked?: () => string[];
 }
 
@@ -82,7 +82,7 @@ export class PiConversation implements Conversation {
 
   async ask(prompt: string, ctx: { run?: string; addressed?: boolean; mustSpeak?: boolean; images?: ImageContent[] } = {}): Promise<string> {
     this.cur = { run: ctx.run };
-    this.d.budget?.reset();
+    this.resetBudgets();
     this.refreshPersona();
     const images = this.acceptsImages ? ctx.images : undefined; // a text-only model would reject the request
     try {
@@ -101,7 +101,7 @@ export class PiConversation implements Conversation {
       const reason = ctx.addressed ? "addressed without send" : "must speak without send";
       this.log.warn(`group ${this.d.groupId}: ${reason}; reminding it once`);
       this.emit("turn.nudge", { reason, dropped_chars: first.text.length });
-      this.d.budget?.reset();
+      this.resetBudgets();
       try {
         return (await this.runTurn(ctx.addressed ? SEND_NUDGE_PROMPT : SPEAK_NUDGE_PROMPT, "nudge")).text;
       } catch (err) {
@@ -111,6 +111,10 @@ export class PiConversation implements Conversation {
     } finally {
       this.cur = {};
     }
+  }
+
+  private resetBudgets(): void {
+    for (const b of this.d.budgets ?? []) b.reset();
   }
 
   private personaPaths(): ReadonlySet<string> | undefined {

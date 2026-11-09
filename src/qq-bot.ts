@@ -1,5 +1,8 @@
 import { createInterface } from "node:readline";
 import { ConversationStore } from "./conversation-store.js";
+import { ColabStore } from "./colab-store.js";
+import { createColabCli } from "./colab/cli.js";
+import { ColabRunner } from "./colab/runner.js";
 import { backfillAll } from "./backfill.js";
 import { Bot } from "./bot.js";
 import { bootstrap, orExit } from "./bootstrap.js";
@@ -43,8 +46,14 @@ const promptImages = imageSource && {
   const evicted = imageStore.evict(config.images.storeMaxBytes); // the cap may have been lowered (or set to 0) since the last run
   if (evicted > 0) logger.info(`deleted ${evicted} stored picture(s) to fit IMAGE_STORE_MAX_BYTES=${config.images.storeMaxBytes}`);
 }
+// `run_python`: one Colab CPU runtime shared by every group, created on the first run and released when idle (COLAB_*).
+const colab = config.colab.enabled ? new ColabRunner({ cli: createColabCli(config.colab.cliPath), store: new ColabStore(db), config: config.colab, logger, events }) : undefined;
+if (colab) {
+  logger.info(`run_python enabled: Colab session ${config.colab.sessionName}, released after ${config.colab.idleMs / 1000}s idle`);
+  colab.restore().catch((err) => logger.error(`colab: startup clean-up failed: ${err instanceof Error ? err.message : String(err)}`));
+}
 const makeConversation = await orExit(logger, () =>
-  createPiConversationFactory(db, config, logger, (groupId, text, replyTo) => bot.sendText(groupId, text, replyTo), (groupId, imageId, text, replyTo) => bot.sendImage(groupId, imageId, text, replyTo), events),
+  createPiConversationFactory(db, config, logger, (groupId, text, replyTo) => bot.sendText(groupId, text, replyTo), (groupId, imageId, text, replyTo) => bot.sendImage(groupId, imageId, text, replyTo), events, colab && ((req) => colab.run(req))),
 );
 const wakeRules = createWakeRules({ fs: new VirtualFs(db), logger }); // /wake-rules.md in the agent's filesystem: created if missing, reloaded when the agent edits it
 const responder = new PiResponder(
@@ -91,10 +100,15 @@ responder.restore((groupId) => !config.groups || config.groups.has(groupId)); //
 client.start();
 
 // Console commands (stdin lines, e.g. in the tmux pane): `compact` archives every group's whole context right away;
-// `clear` forgets it entirely (live messages and archive; the chat log, files and profile stay).
+// `clear` forgets it entirely (live messages and archive; the chat log, files and profile stay); `colab-stop` releases the Colab runtime now.
 const conversationStore = new ConversationStore(db);
 createInterface({ input: process.stdin }).on("line", (line) => {
   const cmd = line.trim();
+  if (cmd === "colab-stop") {
+    if (!colab) logger.info("colab-stop: run_python is not enabled");
+    else colab.stop("console").then(() => logger.info("colab-stop: done"), (err) => logger.error(`colab-stop failed: ${err instanceof Error ? err.message : String(err)}`));
+    return;
+  }
   if (cmd !== "compact" && cmd !== "clear") return;
   const ids = config.groups ? [...config.groups] : conversationStore.groupIds();
   if (ids.length === 0) logger.info(`${cmd}: no conversation`);
@@ -113,12 +127,17 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   }
 });
 
-const shutdown = (signal: string) => {
+let stopping = false;
+const shutdown = async (signal: string) => {
+  if (stopping) return;
+  stopping = true;
   logger.info("shutting down");
   events.emit("proc.stop", { signal });
   client.stop();
+  // Release the Colab runtime (bounded: `colab stop` has its own timeout) so it does not keep running unused.
+  await colab?.shutdown().catch((err) => logger.error(`colab: release on shutdown failed: ${err instanceof Error ? err.message : String(err)}`));
   db.close();
   process.exit(0);
 };
-process.on("SIGINT", () => shutdown("SIGINT"));
-process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdown("SIGINT"));
+process.on("SIGTERM", () => void shutdown("SIGTERM"));

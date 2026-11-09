@@ -131,4 +131,16 @@ describe("unlinkedNotes", () => {
     fs.writeFile("/persona.md", "[喜好](/members/likes.md) [其他](/other/a.md) [唤醒](/wake-rules.md)");
     expect(unlinkedNotes(fs)).toEqual([]);
   });
+
+  it("covers .py scripts as well: they must be linked from a note; links inside a script are not followed; the archive tree stays .md", async () => {
+    const { personaTree } = await import("../src/context/persona.js");
+    const fs = new VirtualFs(openDb(":memory:"));
+    fs.writeFile("/persona.md", "[脚本](/scripts/a.py)");
+    fs.writeFile("/scripts/a.py", "# [x](/scripts/hidden.md)\nprint(1)");
+    fs.writeFile("/scripts/b.py", "print(2)");
+    fs.writeFile("/scripts/hidden.md", "only linked from code");
+    fs.writeFile("/data.txt", "not a note");
+    expect(unlinkedNotes(fs)).toEqual(["/scripts/b.py", "/scripts/hidden.md"]);
+    expect([...personaTree(fs)]).toEqual(["/persona.md"]);
+  });
 });
