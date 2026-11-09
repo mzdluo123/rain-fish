@@ -68,6 +68,7 @@ export class MessageStore {
       where.push("m.ts <= ?");
       args.push(q.until);
     }
+    if (q.withImages) where.push("EXISTS (SELECT 1 FROM message_images mi WHERE mi.platform = m.platform AND mi.group_id = m.group_id AND mi.message_id = m.message_id)");
     args.push(Math.min(Math.max(Math.trunc(q.limit ?? 10), 1), MAX_SEARCH_LIMIT));
     const rows = this.db
       .query(

@@ -6,9 +6,14 @@ import { openDb } from "./db/open.js";
 import { PendingStore } from "./pending-store.js";
 import { OneBotClient } from "./qq/client.js";
 import { createImageSource } from "./images.js";
+import { ImageStore } from "./image-store.js";
+import { createPictureArchive } from "./picture-archive.js";
+import { createModelImage } from "./image-resize.js";
 import { PiResponder } from "./responder.js";
 import { SpeakStore } from "./speak-store.js";
 import { MessageStore } from "./store.js";
+import { VirtualFs } from "./vfs.js";
+import { createWakeRules } from "./wake-rules.js";
 
 const { config, logger, events } = bootstrap();
 
@@ -17,12 +22,32 @@ const store = new MessageStore(db);
 // The client and the bot reference each other: the client delivers messages, the bot sends through it.
 // The agent's `send` tool posts via the bot; the responder wakes the agent for batches of queued messages.
 let bot: Bot;
+const imageStore = new ImageStore(db);
+const modelImage = createModelImage({ maxPixels: config.images.modelMaxPixels, maxEdge: config.images.modelMaxEdge, detailMaxPixels: config.images.detailMaxPixels });
+const imageSource = config.images.maxBytes > 0 && config.images.maxPerRun > 0 ? createImageSource({ ...config.images, logger }) : undefined;
+// Pictures are kept as they arrive (so they outlive QQ's URLs; the ORIGINAL is stored, the model gets a scaled-down copy). With
+// IMAGE_STORE_MAX_BYTES=0 only the download at wake-up remains, scaled the same way.
+const pictures = config.images.maxBytes > 0 && config.images.storeMaxBytes > 0 ? createPictureArchive({ source: imageSource ?? createImageSource({ ...config.images, maxPerRun: 1, logger }), store: imageStore, maxBytes: config.images.storeMaxBytes, shrink: modelImage, logger }) : undefined;
+const promptImages = imageSource && {
+  maxPerRun: imageSource.maxPerRun,
+  async load(url: string) {
+    const img = await imageSource.load(url);
+    if (!img) return undefined;
+    const shown = await modelImage({ data: Buffer.from(img.data, "base64"), mime: img.mimeType });
+    return { type: "image" as const, data: shown.data.toString("base64"), mimeType: shown.mime };
+  },
+};
+{
+  const evicted = imageStore.evict(config.images.storeMaxBytes); // the cap may have been lowered (or set to 0) since the last run
+  if (evicted > 0) logger.info(`deleted ${evicted} stored picture(s) to fit IMAGE_STORE_MAX_BYTES=${config.images.storeMaxBytes}`);
+}
 const makeConversation = await orExit(logger, () =>
-  createPiConversationFactory(db, config, logger, (groupId, text, replyTo) => bot.sendText(groupId, text, replyTo), events),
+  createPiConversationFactory(db, config, logger, (groupId, text, replyTo) => bot.sendText(groupId, text, replyTo), (groupId, imageId, text, replyTo) => bot.sendImage(groupId, imageId, text, replyTo), events),
 );
+const wakeRules = createWakeRules({ fs: new VirtualFs(db), logger }); // /wake-rules.md in the agent's filesystem: created if missing, reloaded when the agent edits it
 const responder = new PiResponder(
   makeConversation,
-  { wake: config.wake, speakEveryRuns: config.speakEveryRuns, speakStore: new SpeakStore(db), pending: new PendingStore(db), images: config.images.maxBytes > 0 && config.images.maxPerRun > 0 ? createImageSource({ ...config.images, logger }) : undefined, logger, events },
+  { wake: config.wake, weigh: wakeRules.weigh, speakEveryRuns: config.speakEveryRuns, speakStore: new SpeakStore(db), pending: new PendingStore(db), images: promptImages, pictures, logger, events },
 );
 let backfilled = false;
 const client = new OneBotClient({
@@ -42,7 +67,7 @@ const client = new OneBotClient({
   },
   logger,
 });
-bot = new Bot({ store, responder, api: client, groups: config.groups, logger, events });
+bot = new Bot({ store, images: imageStore, pictures, responder, api: client, groups: config.groups, logger, events });
 
 events.emit("proc.start", {
   entry: "bot",

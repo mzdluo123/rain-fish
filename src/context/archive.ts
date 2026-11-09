@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import path from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
 import { frames, plannedFrameTokens, renderMany, resolveShape, serializeConversation } from "@oh-my-pi/snapcompact";
 import { estimateTextTokens } from "./estimate.js";
@@ -17,10 +18,49 @@ export function isArchiveMessage(m: AgentMessage): boolean {
 /** Whether the model can read image frames; otherwise the archive is kept as plain text. */
 export const canReadImages = (model: Model<any> | undefined): boolean => Boolean(model?.input.includes("image"));
 
-/** Archive text for messages that are being retired (thinking is left out; see snapcompact docs). */
-export function serializeForArchive(messages: readonly AgentMessage[]): string {
+/** `<system>…</system>` blocks are program text (identity notice, picture numbering, must-speak notice, flush and reminder prompts), never members' words. */
+const SYSTEM_BLOCK = /<system>[\s\S]*?<\/system>/g;
+const FILE_TOOLS = new Set(["read", "write", "edit"]);
+
+export interface ArchiveFilter {
+  /** Paths of the agent's self-profile (see `personaTree`): calls on them, and their results, are left out of the archive. */
+  personaPaths?: ReadonlySet<string>;
+}
+
+/**
+ * Archive text for messages that are being retired (thinking is left out; see snapcompact docs). Two kinds of text are
+ * deliberately not carried into the archive, because they would only waste its small budget again and again:
+ *  - program-written `<system>` blocks in user turns (they repeat in every batch);
+ *  - the agent's reads and writes of its self-profile files: the profile is pinned at the top of every request (and the
+ *    files hold the current truth), an archived old version would contradict it.
+ */
+export function serializeForArchive(messages: readonly AgentMessage[], filter: ArchiveFilter = {}): string {
+  const persona = filter.personaPaths;
+  const pathOf = new Map<string, string>(); // tool call id -> file path, for calls that read or write a file
+  if (persona && persona.size > 0) {
+    for (const m of messages) {
+      if (m.role !== "assistant") continue;
+      for (const c of m.content) {
+        if (c.type !== "toolCall" || !FILE_TOOLS.has(c.name)) continue;
+        const p = (c.arguments as { path?: unknown }).path;
+        if (typeof p === "string") pathOf.set(c.id, path.posix.resolve("/", p));
+      }
+    }
+  }
+  const cleaned = messages.map((m): AgentMessage => {
+    if (m.role === "user") {
+      if (typeof m.content === "string") return { ...m, content: m.content.replace(SYSTEM_BLOCK, "").trim() };
+      return { ...m, content: m.content.map((c) => (c.type === "text" ? { ...c, text: c.text.replace(SYSTEM_BLOCK, "").trim() } : c)) };
+    }
+    if (m.role === "toolResult" && !m.isError) {
+      const p = pathOf.get(m.toolCallId);
+      // snapcompact skips a `useless` result together with the call that produced it
+      if (p !== undefined && persona?.has(p)) return { ...m, useless: true } as unknown as AgentMessage;
+    }
+    return m;
+  });
   // snapcompact types its input with omp's pi-ai Message; the shapes (user/assistant/toolResult) are the same.
-  const input = messages as unknown as Parameters<typeof serializeConversation>[0];
+  const input = cleaned as unknown as Parameters<typeof serializeConversation>[0];
   return serializeConversation(input, { includeThinking: false });
 }
 

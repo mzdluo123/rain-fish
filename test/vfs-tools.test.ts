@@ -1,9 +1,10 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { createAgent } from "../src/agent.js";
-import { makeEnv } from "./helpers.js";
+import { makeEnv, markSeen } from "./helpers.js";
 
 const env = makeEnv();
+let session: Awaited<ReturnType<typeof createAgent>>["session"];
 let tools: Map<string, { execute: (id: string, args: never) => Promise<{ content: { type: string; text?: string }[] }> }>;
 
 async function call(name: string, args: Record<string, unknown>): Promise<string> {
@@ -12,7 +13,7 @@ async function call(name: string, args: Record<string, unknown>): Promise<string
 }
 
 beforeAll(async () => {
-  const { session } = await createAgent(env);
+  ({ session } = await createAgent(env));
   tools = new Map(session.agent.state.tools.map((t) => [t.name, t as never]));
 });
 
@@ -21,6 +22,7 @@ describe("file tools work on the database", () => {
     await call("write", { path: "notes/a.md", content: "hello world\nsecond line" });
     expect(env.fs.readText("/notes/a.md")).toBe("hello world\nsecond line");
     expect(await call("read", { path: "/notes/a.md" })).toContain("hello world");
+    markSeen(session, "notes/a.md"); // in the real loop the read result is in the context by the next step
     await call("edit", { path: "notes/a.md", edits: [{ oldText: "hello", newText: "bye" }] });
     expect(env.fs.readText("/notes/a.md")).toBe("bye world\nsecond line");
     expect(await call("ls", { path: "/" })).toMatch(/notes\//);
@@ -92,5 +94,23 @@ describe("grep over database files", () => {
 
   it("rejects an invalid regex with a clear error", async () => {
     await expect(call("grep", { pattern: "(", path: "/g" })).rejects.toThrow(/Invalid regex/);
+  });
+});
+
+describe("personaTree", () => {
+  it("is the entry file plus the notes linked from it, however deep", async () => {
+    const { personaTree } = await import("../src/context/persona.js");
+    const { VirtualFs } = await import("../src/vfs.js");
+    const { openDb } = await import("../src/db/open.js");
+    const fs = new VirtualFs(openDb(":memory:"));
+    fs.mkdir("/members");
+    fs.mkdir("/other");
+    fs.writeFile("/persona.md", "# 我\n- [喜好](/members/likes.md)\n- [群规](/rules.md) （还没写）\n");
+    fs.writeFile("/members/likes.md", "细节在 [牛奶](/members/milk.md)，回到 [我](/persona.md)\n");
+    fs.writeFile("/members/milk.md", "热的");
+    fs.writeFile("/other/unrelated.md", "与档案无关");
+    const tree = personaTree(fs);
+    expect([...tree].sort()).toEqual(["/members/likes.md", "/members/milk.md", "/persona.md", "/rules.md"]);
+    expect(personaTree(new VirtualFs(openDb(":memory:"))).has("/persona.md")).toBe(true); // even before the file exists
   });
 });

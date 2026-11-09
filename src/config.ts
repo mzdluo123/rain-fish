@@ -40,24 +40,33 @@ export const configSchema = z
       .optional(),
     /** Thinking effort: `off` disables thinking. Unset: Pi's default (medium, clamped to what the model supports). */
     THINKING_LEVEL: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).optional(),
+    /** How long the provider keeps the cached prompt prefix: "long" = 1 hour (Anthropic), "short" = the provider's default (5 minutes). Sets Pi's PI_CACHE_RETENTION. */
+    CACHE_RETENTION: z.enum(["short", "long"]).default("long"),
     // --- context management (tokens) ---
-    /** Newest history that is never touched: protected from level-1 pruning, kept verbatim by level-2 compaction. */
+    /** Newest history that compaction keeps verbatim (it only retires what is older, cutting at a turn start). */
     CONTEXT_RECENT_TOKENS: z.coerce.number().int().positive().default(12_000),
-    /** Level 1: an old tool result / tool-call argument at least this big is cleared. */
-    CONTEXT_PRUNE_MIN_TOKENS: z.coerce.number().int().positive().default(800),
-    /** Level 1 waits until this many clearable blocks are outside the recent window, then clears them all at once (each clearing breaks the prompt cache from that block on). */
-    CONTEXT_PRUNE_BATCH_BLOCKS: z.coerce.number().int().positive().default(4),
-    /** Level 2: when the context grows past this, older history is snap-compacted into the archive. */
+    /** When the context grows past this, older history is snap-compacted into the archive. */
     CONTEXT_COMPACT_TOKENS: z.coerce.number().int().positive().default(60_000),
-    /** Level 2: token budget of the archive (bitmap frames) that replaces the compacted history. */
+    /** Token budget of the archive (bitmap frames) that replaces the compacted history. */
     CONTEXT_ARCHIVE_TOKENS: z.coerce.number().int().positive().default(20_000),
     /** Memory flush: once the context passes this fraction of COMPACT, the agent is asked to save what matters to its files first. */
     CONTEXT_FLUSH_RATIO: z.coerce.number().gt(0).lt(1).default(0.85),
     // --- wake-ups ---
-    /** Mean seconds between agent wake-ups of a group while ordinary chatter is pending (Poisson process: exponential gaps). */
-    WAKE_CHAT_MEAN_SECONDS: z.coerce.number().nonnegative().default(30),
-    /** Same, once a pending message @-mentions the bot or replies to it. 0 = wake at the next tick. */
-    WAKE_ADDRESSED_MEAN_SECONDS: z.coerce.number().nonnegative().default(2),
+    // The wake-up comes after the chat has gone quiet (Hawkes excitation, see src/wake-intensity.ts) plus a random "reaction time".
+    /** Mean seconds of the random reaction time (exponential) added after the chat has gone quiet, while only ordinary chatter is pending. */
+    WAKE_CHAT_MEAN_SECONDS: z.coerce.number().nonnegative().default(20),
+    /** Same, once a pending message @-mentions the bot or replies to it. 0 = no extra delay. */
+    WAKE_ADDRESSED_MEAN_SECONDS: z.coerce.number().nonnegative().default(1),
+    /** Hawkes decay rate beta, per second: how fast a burst of messages cools down (0.4 -> half-life ~1.7 s). */
+    WAKE_DECAY_PER_SECOND: z.coerce.number().positive().default(0.4),
+    /** The chat counts as quiet when the excitation is down to this many ordinary messages (smaller = wait longer after a burst). */
+    WAKE_QUIET_THRESHOLD: z.coerce.number().positive().default(0.3),
+    /** Upper bound, from the first pending message, however busy the chat stays. */
+    WAKE_MAX_WAIT_SECONDS: z.coerce.number().positive().default(120),
+    /** Same, measured from the first pending message that is addressed to the bot. */
+    WAKE_ADDRESSED_MAX_WAIT_SECONDS: z.coerce.number().positive().default(20),
+    /** This many pending messages wake the agent at once. */
+    WAKE_MAX_BATCH: z.coerce.number().int().positive().default(30),
     /** Every this many agent runs of a group, the next batch carries a system notice that the agent must say something. 0 = never. */
     SPEAK_EVERY_RUNS: z.coerce.number().int().nonnegative().default(5),
     // --- history backfill ---
@@ -70,6 +79,19 @@ export const configSchema = z
     IMAGE_MAX_BYTES: z.coerce.number().int().nonnegative().default(3 * 1024 * 1024),
     /** At most this many images (the newest) are attached to one wake-up; the rest stay placeholders. */
     IMAGE_MAX_PER_RUN: z.coerce.number().int().nonnegative().default(4),
+    /** Pictures of incoming messages are downloaded and kept (so the agent can look at and re-send them later) up to this many bytes in total; the least recently used go first. 0 = pictures are not kept. */
+    IMAGE_STORE_MAX_BYTES: z.coerce.number().int().nonnegative().default(200 * 1024 * 1024),
+    /** The model sees a scaled-down copy of every picture (same aspect ratio, never enlarged): at most this many pixels (tokens ~ pixels / 750). 0 = send pictures as they are. */
+    IMAGE_MODEL_MAX_PIXELS: z.coerce.number().int().nonnegative().default(800_000),
+    /** ... and at most this long a side (the big providers resize anything above ~1568 px themselves). */
+    IMAGE_MODEL_MAX_EDGE: z.coerce.number().int().positive().default(1568),
+    /** Pixel budget of `view_image` when the agent asks for detail (about the providers' own limit). */
+    IMAGE_DETAIL_MAX_PIXELS: z.coerce.number().int().positive().default(1_150_000),
+    // --- what the agent posts in one run ---
+    /** Messages (`send` + `send_image`) the agent may post in one run; more are refused until the next wake-up. */
+    SEND_MAX_PER_RUN: z.coerce.number().int().positive().default(6),
+    /** Pause before the second and later message of a run, ms (looks less robotic, stays under QQ's rate limits). */
+    SEND_GAP_MS: z.coerce.number().int().nonnegative().default(800),
     // --- execution trace (structured, rotating event log) ---
     TRACE_ENABLED: flag(true),
     /** Directory of the trace files (`agent.jsonl` + rotated `agent.<time>.jsonl.gz`). */
@@ -93,10 +115,9 @@ export const configSchema = z
     logLevel: e.LOG_LEVEL,
     model: e.MODEL,
     thinkingLevel: e.THINKING_LEVEL,
+    cacheRetention: e.CACHE_RETENTION,
     context: {
       recentTokens: e.CONTEXT_RECENT_TOKENS,
-      pruneMinTokens: e.CONTEXT_PRUNE_MIN_TOKENS,
-      pruneBatchBlocks: e.CONTEXT_PRUNE_BATCH_BLOCKS,
       compactTokens: e.CONTEXT_COMPACT_TOKENS,
       archiveTokens: e.CONTEXT_ARCHIVE_TOKENS,
       flushRatio: e.CONTEXT_FLUSH_RATIO,
@@ -105,10 +126,23 @@ export const configSchema = z
     wake: {
       chatMeanMs: e.WAKE_CHAT_MEAN_SECONDS * 1000,
       addressedMeanMs: e.WAKE_ADDRESSED_MEAN_SECONDS * 1000,
+      decayPerSec: e.WAKE_DECAY_PER_SECOND,
+      quietThreshold: e.WAKE_QUIET_THRESHOLD,
+      maxWaitMs: e.WAKE_MAX_WAIT_SECONDS * 1000,
+      addressedMaxWaitMs: e.WAKE_ADDRESSED_MAX_WAIT_SECONDS * 1000,
+      maxBatch: e.WAKE_MAX_BATCH,
     },
     images: {
       maxBytes: e.IMAGE_MAX_BYTES,
       maxPerRun: e.IMAGE_MAX_PER_RUN,
+      storeMaxBytes: e.IMAGE_STORE_MAX_BYTES,
+      modelMaxPixels: e.IMAGE_MODEL_MAX_PIXELS,
+      modelMaxEdge: e.IMAGE_MODEL_MAX_EDGE,
+      detailMaxPixels: e.IMAGE_DETAIL_MAX_PIXELS,
+    },
+    send: {
+      maxPerRun: e.SEND_MAX_PER_RUN,
+      gapMs: e.SEND_GAP_MS,
     },
     backfill: {
       minMessages: e.BACKFILL_MIN_MESSAGES,

@@ -1,5 +1,6 @@
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { imageRef, type ImageStore } from "../image-store.js";
 import { MAX_SEARCH_LIMIT, type MessageStore } from "../store.js";
 import { escapeText } from "../xml.js";
 
@@ -14,7 +15,7 @@ function parseTime(label: string, value: string | undefined): number | undefined
 }
 
 /** Read-only full-text search over the stored chat history of the one group this agent serves. */
-export function createSearchMessagesTool(store: MessageStore, groupId: string) {
+export function createSearchMessagesTool(store: MessageStore, groupId: string, images?: ImageStore) {
   return defineTool({
     name: SEARCH_TOOL,
     label: "Search messages",
@@ -27,6 +28,7 @@ export function createSearchMessagesTool(store: MessageStore, groupId: string) {
       since: Type.Optional(Type.String({ description: "Earliest time, ISO 8601 (e.g. 2026-11-01)" })),
       until: Type.Optional(Type.String({ description: "Latest time, ISO 8601" })),
       limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_SEARCH_LIMIT, description: "Max results (default 10)" })),
+      with_images: Type.Optional(Type.Boolean({ description: "Only messages that carried pictures (their ids are listed as [图片: i42]; use query 图片 to list them all)" })),
     }),
     execute: async (_toolCallId, p) => {
       const hits = store.search({
@@ -36,6 +38,7 @@ export function createSearchMessagesTool(store: MessageStore, groupId: string) {
         since: parseTime("since", p.since),
         until: parseTime("until", p.until),
         limit: p.limit,
+        withImages: p.with_images,
       });
       const text = hits.length
         ? hits
@@ -43,7 +46,9 @@ export function createSearchMessagesTool(store: MessageStore, groupId: string) {
               const when = new Date(h.ts * 1000).toLocaleString("sv-SE");
               const body = h.text.length > MAX_TEXT ? `${h.text.slice(0, MAX_TEXT)}…` : h.text;
               // nicknames and text are written by group members: escape them like in the group prompt
-              return `[${when}] ${escapeText(h.nickname)} (${h.userId}): ${escapeText(body)}`;
+              const ids = images?.idsOf(groupId, h.messageId) ?? [];
+              const pics = ids.length ? ` [图片: ${ids.map(imageRef).join(",")}]` : "";
+              return `[${when}] ${escapeText(h.nickname)} (${h.userId}): ${escapeText(body)}${pics}`;
             })
             .join("\n")
         : "No matching messages.";

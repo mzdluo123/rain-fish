@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
 import { attachImages, formatBatch, formatPrompt, PiResponder, sampleExponential, type PiResponderOptions } from "../src/responder.js";
 import type { ImageContent } from "@earendil-works/pi-ai";
-import type { Conversation, GroupMessage, ImageSource, PendingMessage } from "../src/types.js";
+import type { Conversation, GroupMessage, ImageSource, PendingMessage, WakeConfig } from "../src/types.js";
 import { openDb } from "../src/db/open.js";
 import { PendingStore } from "../src/pending-store.js";
 import { SpeakStore } from "../src/speak-store.js";
@@ -15,9 +15,14 @@ const msg = (groupId: string, text: string, messageId = "1"): GroupMessage => ({
   selfId: "1", isSelf: false, mentionsSelf: false,
 });
 
-/** random() = 0.5 makes every wait exactly mean * ln 2 (~0.693 * mean), so timing is predictable. */
+/** A chat that cools down instantly and has no maximum waits: only the random reaction time is left, so tests stay in milliseconds. */
+const wakeCfg = (chatMeanMs: number, addressedMeanMs: number, extra: Partial<WakeConfig> = {}): WakeConfig => ({
+  chatMeanMs, addressedMeanMs, decayPerSec: 1e9, quietThreshold: 0.3, maxWaitMs: 1e12, addressedMaxWaitMs: 1e12, maxBatch: 1e9, ...extra,
+});
+
+/** random() = 0.5 makes every reaction time exactly mean * ln 2 (~0.693 * mean), so timing is predictable. */
 const opts = (chatMeanMs: number, addressedMeanMs: number, extra: Partial<PiResponderOptions> = {}): PiResponderOptions => ({
-  wake: { chatMeanMs, addressedMeanMs }, random: () => 0.5, ...extra,
+  wake: wakeCfg(chatMeanMs, addressedMeanMs), random: () => 0.5, ...extra,
 });
 
 /** Lets the responder's promise chains settle (timers are driven by `jest.advanceTimersByTime`). */
@@ -235,12 +240,15 @@ describe("PiResponder wake-ups", () => {
     expect(log).toEqual(["start a|b|c", "end"]);
   });
 
-  it("starts the clock at the first pending message; later chatter does not postpone it", async () => {
+  it("every message recomputes the wake-up: a burst keeps pushing it back", async () => {
     const log: string[] = [];
-    const r = new PiResponder(async () => fakeConversation(log).conversation, opts(100, 100)); // wait ~69.3ms
-    r.notify(msg("1", "a"), false);
+    const r = new PiResponder(async () => fakeConversation(log).conversation, opts(100, 100)); // reaction time ~69.3ms
+    r.notify(msg("1", "a"), false); // due at ~69.3ms
     jest.advanceTimersByTime(40);
-    r.notify(msg("1", "b"), false); // a fresh draw for "b" would put the wake-up at ~109ms
+    r.notify(msg("1", "b"), false); // a fresh reaction time from now: due at ~109.3ms
+    jest.advanceTimersByTime(40);
+    await flush();
+    expect(log).toEqual([]); // the original clock would have fired by now
     jest.advanceTimersByTime(30);
     await flush();
     expect(log).toEqual(["start a|b", "end"]);
@@ -259,14 +267,87 @@ describe("PiResponder wake-ups", () => {
     expect(log).toEqual(["start chat|hey bot", "end"]);
   });
 
-  it("an addressed message never delays an earlier chat wake-up", async () => {
-    const log: string[] = [];
-    const r = new PiResponder(async () => fakeConversation(log).conversation, opts(20, 1_000_000)); // chat ~13.9ms
-    r.notify(msg("1", "chat"), false);
-    r.notify(msg("1", "hey bot"), true);
-    jest.advanceTimersByTime(14);
+  it("waits for the chat to go quiet: a burst is waited out, a lone message is not", async () => {
+    const hawkes = { decayPerSec: 0.4, quietThreshold: 0.3 }; // one message alone: ln(1/0.3)/0.4 = 3.01 s
+    const lone: string[] = [];
+    const a = new PiResponder(async () => fakeConversation(lone).conversation, { wake: wakeCfg(0, 0, hawkes), random: () => 0.5 });
+    a.notify(msg("1", "hi"), false);
+    jest.advanceTimersByTime(2_900);
     await flush();
-    expect(log).toEqual(["start chat|hey bot", "end"]);
+    expect(lone).toEqual([]);
+    jest.advanceTimersByTime(200);
+    await flush();
+    expect(lone).toEqual(["start hi", "end"]);
+
+    const burst: string[] = [];
+    const b = new PiResponder(async () => fakeConversation(burst).conversation, { wake: wakeCfg(0, 0, hawkes), random: () => 0.5 });
+    for (let i = 0; i < 5; i++) {
+      b.notify(msg("2", `m${i}`, String(i)), false);
+      jest.advanceTimersByTime(200); // five messages within a second: S ~ 4.5 -> ~7 s of quiet
+    }
+    jest.advanceTimersByTime(4_000);
+    await flush();
+    expect(burst).toEqual([]); // 3 s would have been enough for a single message
+    jest.advanceTimersByTime(4_000);
+    await flush();
+    expect(burst).toEqual(["start m0|m1|m2|m3|m4", "end"]);
+  });
+
+  it("a message to the bot or a question is answered sooner than ordinary chatter, an unfinished sentence later", async () => {
+    const hawkes = { decayPerSec: 0.4, quietThreshold: 0.3 };
+    const dueAfter = async (text: string, addressed: boolean) => {
+      const trace = memoryEventLog();
+      const r = new PiResponder(async () => fakeConversation([]).conversation, { wake: wakeCfg(0, 0, hawkes), random: () => 0.5, events: trace.events });
+      r.notify(msg("1", text), addressed);
+      return trace.records("wake.scheduled")[0]!.in_ms as number;
+    };
+    const plain = await dueAfter("今天天气不错", false);
+    expect(plain).toBe(3_010);
+    expect(await dueAfter("今天天气不错吗？", false)).toBeLessThan(plain);
+    expect(await dueAfter("今天天气不错", true)).toBe(await dueAfter("这个行吗？", false));
+    expect(await dueAfter("首先，", false)).toBeGreaterThan(plain);
+  });
+
+  it("takes the weight of each message from the injected table and traces the rows that applied", () => {
+    const trace = memoryEventLog();
+    const r = new PiResponder(async () => fakeConversation([]).conversation, { wake: wakeCfg(0, 0), random: () => 0.5, events: trace.events, weigh: (text) => ({ weight: text === "heavy" ? 4 : 1, rules: text === "heavy" ? ["mine"] : [] }) });
+    r.notify(msg("1", "heavy", "1"), false);
+    expect(trace.records("wake.weight")[0]).toMatchObject({ message_id: "1", weight: 4, rules: ["mine"] });
+    expect(trace.records("wake.scheduled")[0]!.excitation).toBe(4);
+  });
+
+  it("the maximum wait ends a chat that never goes quiet; a full batch wakes the agent at once", async () => {
+    const hawkes = { decayPerSec: 0.4, quietThreshold: 0.3, maxWaitMs: 10_000 };
+    const log: string[] = [];
+    const r = new PiResponder(async () => fakeConversation(log).conversation, { wake: wakeCfg(0, 0, hawkes), random: () => 0.5 });
+    for (let i = 0; i < 20; i++) {
+      r.notify(msg("1", `m${i}`, String(i)), false); // a message every 600 ms keeps the excitation above the threshold
+      jest.advanceTimersByTime(600);
+    }
+    await flush();
+    expect(log).toHaveLength(2); // woken at 10 s (maximum wait from "m0"), a second batch collects after it
+    expect(log[0]).toStartWith("start m0|m1");
+
+    const full: string[] = [];
+    const f = new PiResponder(async () => fakeConversation(full).conversation, { wake: wakeCfg(1_000_000, 0, { maxBatch: 3 }), random: () => 0.5 });
+    f.notify(msg("2", "a", "1"), false);
+    f.notify(msg("2", "b", "2"), false);
+    jest.advanceTimersByTime(1);
+    await flush();
+    expect(full).toEqual([]);
+    f.notify(msg("2", "c", "3"), false);
+    jest.advanceTimersByTime(1);
+    await flush();
+    expect(full).toEqual(["start a|b|c", "end"]);
+  });
+
+  it("the maximum wait for an addressed message counts from that message, not from earlier chatter", async () => {
+    const trace = memoryEventLog();
+    const r = new PiResponder(async () => fakeConversation([]).conversation, { wake: wakeCfg(0, 1_000_000, { addressedMaxWaitMs: 5_000 }), random: () => 0.5, events: trace.events });
+    r.notify(msg("1", "chat", "1"), false);
+    jest.advanceTimersByTime(60_000 - 1);
+    r.notify(msg("1", "hey bot", "2"), true);
+    expect(trace.records("wake.scheduled")[1]).toMatchObject({ in_ms: 5_000, addressed: true, capped: true });
   });
 
   it("runs of one group never overlap; messages arriving mid-run wait for the next wake-up", async () => {
@@ -350,7 +431,7 @@ describe("PiResponder restart", () => {
 
   it("messages that were waiting when the process stopped are handled after the restart, with their addressed flag, then forgotten", async () => {
     const db = openDb(":memory:");
-    const before = boot(db, fakeConversation([]).conversation, { wake: { chatMeanMs: 1_000_000, addressedMeanMs: 1_000_000 } });
+    const before = boot(db, fakeConversation([]).conversation, { wake: wakeCfg(1_000_000, 1_000_000) });
     before.notify(msg("1", "a", "10"), false);
     before.notify(msg("1", "b", "11"), true);
     // ...process dies before the wake-up fires...
@@ -397,7 +478,7 @@ describe("PiResponder restart", () => {
 
   it("restore only keeps groups it is told to handle and discards the rest", async () => {
     const db = openDb(":memory:");
-    const before = boot(db, fakeConversation([]).conversation, { wake: { chatMeanMs: 1_000_000, addressedMeanMs: 1_000_000 } });
+    const before = boot(db, fakeConversation([]).conversation, { wake: wakeCfg(1_000_000, 1_000_000) });
     before.notify(msg("1", "keep", "10"), false);
     before.notify(msg("2", "gone", "11"), false);
     const log: string[] = [];
@@ -411,7 +492,7 @@ describe("PiResponder restart", () => {
 
   it("the same message is queued once even if it is notified twice", () => {
     const db = openDb(":memory:");
-    const r = boot(db, fakeConversation([]).conversation, { wake: { chatMeanMs: 1_000_000, addressedMeanMs: 1_000_000 } });
+    const r = boot(db, fakeConversation([]).conversation, { wake: wakeCfg(1_000_000, 1_000_000) });
     r.notify(msg("1", "a", "10"), false);
     r.notify(msg("1", "a", "10"), false);
     expect(new PendingStore(db).load()).toHaveLength(1);

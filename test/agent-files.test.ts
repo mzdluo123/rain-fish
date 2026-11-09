@@ -1,14 +1,15 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { createAgent } from "../src/agent.js";
 import { AGENT_MAX_FILE_BYTES } from "../src/vfs-ops.js";
-import { makeEnv } from "./helpers.js";
+import { makeEnv, markSeen } from "./helpers.js";
 
 const env = makeEnv();
+let session: Awaited<ReturnType<typeof createAgent>>["session"];
 let tools: Map<string, { execute: (id: string, args: never) => Promise<{ content: { type: string; text?: string }[] }> }>;
 const call = (name: string, args: Record<string, unknown>) => tools.get(name)!.execute("t", args as never);
 
 beforeAll(async () => {
-  const { session } = await createAgent(env);
+  ({ session } = await createAgent(env));
   tools = new Map(session.agent.state.tools.map((t) => [t.name, t as never]));
 });
 
@@ -57,6 +58,7 @@ describe("agent file limits: 10 KB per file", () => {
 
   it("an edit that grows a file past the limit is rejected and leaves the file as it was", async () => {
     await call("write", { path: "/grow.md", content: `START ${"y".repeat(AGENT_MAX_FILE_BYTES - 10)}` });
+    markSeen(session, "/grow.md", { name: "write" });
     const before = env.fs.readText("/grow.md");
     await expect(call("edit", { path: "/grow.md", edits: [{ oldText: "START", newText: "START ".repeat(20) }] })).rejects.toThrow(/EFBIG/);
     expect(env.fs.readText("/grow.md")).toBe(before);

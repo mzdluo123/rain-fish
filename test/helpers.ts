@@ -6,6 +6,8 @@ import path from "node:path";
 import type { Logger } from "../src/types.js";
 import { openDb } from "../src/db/open.js";
 import { MessageStore } from "../src/store.js";
+import { ImageStore } from "../src/image-store.js";
+import { RunBudget } from "../src/run-budget.js";
 import { VirtualFs } from "../src/vfs.js";
 import { JsonlEventLog } from "../src/trace/event-log.js";
 
@@ -19,7 +21,14 @@ export function makeEnv(systemPrompt = "# Persona\nYou are TESTBOT.", sendError?
     if (sendError) throw new Error(sendError);
     sent.push({ text, replyTo });
   };
-  return { db, fs, store, systemPrompt, groupId: "100", send, sent };
+  const sentImages: { imageId: number; text?: string; replyTo?: string }[] = [];
+  const sendImage = async (imageId: number, text?: string, replyTo?: string) => {
+    if (sendError) throw new Error(sendError);
+    sentImages.push({ imageId, text, replyTo });
+  };
+  const images = new ImageStore(db);
+  const budget = new RunBudget(6, 0);
+  return { db, fs, store, systemPrompt, groupId: "100", send, sent, sendImage, sentImages, images, budget };
 }
 
 export interface LogEntry {
@@ -85,3 +94,62 @@ export function memoryEventLog(opts: { captureContent?: boolean } = {}) {
 /** Built-in model catalog only: no `models.json`, no network, empty credential file in a temp dir (never the real ~/.pi/agent). */
 export const testModelRuntime = (): Promise<ModelRuntime> =>
   ModelRuntime.create({ modelsPath: null, authPath: path.join(mkdtempSync(path.join(tmpdir(), "rainfish-auth-")), "auth.json"), refreshOnCreate: false });
+
+// ---- pictures -------------------------------------------------------------------------
+
+/** A real, decodable w x h RGBA PNG (a gradient, so it does not compress to nothing). */
+export function pngBytes(width: number, height: number): Buffer {
+  const crcTable = (() => {
+    const t: number[] = [];
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      t.push(c >>> 0);
+    }
+    return t;
+  })();
+  const crc = (b: Buffer) => {
+    let c = 0xffffffff;
+    for (const x of b) c = crcTable[(c ^ x) & 255]! ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type: string, data: Buffer) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type), data]);
+    const sum = Buffer.alloc(4);
+    sum.writeUInt32BE(crc(body));
+    return Buffer.concat([len, body, sum]);
+  };
+  const rows = Buffer.alloc(height * (1 + width * 4));
+  for (let y = 0; y < height; y++) {
+    const o = y * (1 + width * 4);
+    for (let x = 0; x < width; x++) rows.set([x & 255, y & 255, (x ^ y) & 255, 255], o + 1 + x * 4);
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", require("node:zlib").deflateSync(rows)), chunk("IEND", Buffer.alloc(0))]);
+}
+
+/**
+ * Puts a finished tool call on `path` into the agent session's context window, as if the model had made it in an earlier step
+ * (`read` by default; `args` can add offset/limit, `isError` makes it a failed call). Tests call the tools directly, so this
+ * is how they satisfy "the file must have been read before an edit".
+ */
+export function markSeen(
+  session: { agent: { state: { messages: unknown[] } } },
+  path: string,
+  opts: { name?: "read" | "write" | "edit"; args?: Record<string, unknown>; isError?: boolean; timestamp?: number } = {},
+): void {
+  const id = `seen-${Math.random().toString(36).slice(2)}`;
+  const name = opts.name ?? "read";
+  const timestamp = opts.timestamp ?? Date.now();
+  session.agent.state.messages = [
+    ...session.agent.state.messages,
+    { role: "assistant", content: [{ type: "toolCall", id, name, arguments: { path, ...opts.args } }], timestamp },
+    { role: "toolResult", toolCallId: id, toolName: name, content: [{ type: "text", text: "" }], isError: opts.isError ?? false, timestamp },
+  ];
+}

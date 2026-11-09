@@ -21,6 +21,8 @@ import type {
   segmentSchema,
 } from "./qq/schemas.js";
 import type { configSchema } from "./config.js";
+import type { ImageStore } from "./image-store.js";
+import type { RunBudget } from "./run-budget.js";
 import type { MessageStore } from "./store.js";
 import type { VirtualFs } from "./vfs.js";
 
@@ -48,6 +50,8 @@ export interface SearchQuery {
   until?: number;
   /** Default 10, capped at MAX_SEARCH_LIMIT. */
   limit?: number;
+  /** Only messages that carried a stored picture. */
+  withImages?: boolean;
 }
 
 export interface SearchHit extends StoredMessage {
@@ -136,6 +140,14 @@ export interface AgentDeps {
   groupId: string;
   /** Posts to this conversation's group; backs the agent's `send` tool. `replyTo` is a message id to quote. Rejects if delivery fails. */
   send: SendFn;
+  /** Posts a stored picture to this conversation's group; backs `send_image`. Rejects if the group never saw that picture or delivery fails. */
+  sendImage: SendImageFn;
+  /** Stored pictures (scoped to `groupId` on every read); backs `view_image` and the picture ids in `search_messages`. */
+  images: ImageStore;
+  /** Caps and paces what the agent posts in one run; reset by the conversation at the start of each run. */
+  budget: RunBudget;
+  /** Scales pictures down before the model sees them (`view_image`); omit to show them as stored. */
+  modelImage?: ModelImageFn;
 }
 
 // ---- QQ wire types (validated at the WebSocket edge, derived from schemas) --------
@@ -195,6 +207,32 @@ export interface ImageSource {
   load(url: string): Promise<ImageContent | undefined>;
 }
 
+/** A picture kept in the database. */
+export interface StoredImage {
+  id: number;
+  mime: string;
+  size: number;
+  data: Buffer;
+}
+
+/** The copy of a picture that is shown to the model (scaled down). `closer`: a larger budget, for when the agent wants detail. Never throws. */
+export type ModelImageFn = (img: { data: Buffer; mime: string }, closer?: boolean) => Promise<{ data: Buffer; mime: string }>;
+
+/** A picture of a message that is stored: its id. */
+export interface StoredPicture {
+  id: number;
+}
+
+/**
+ * Downloads and keeps the pictures of group messages. `capture` is idempotent per message (concurrent and repeated calls share one
+ * download) and never throws: per picture of the message, the stored picture or `undefined` if it could not be had.
+ */
+export interface PictureArchive {
+  capture(msg: GroupMessage): Promise<(StoredPicture | undefined)[]>;
+  /** The copy of a stored picture of `groupId` that the model sees (scaled down); made when asked for, not when the picture is stored. Never throws. */
+  image(groupId: string, id: number): Promise<ImageContent | undefined>;
+}
+
 /** An image of a group message: where QQ serves it. The URL expires, so it is only good for a short while. */
 export interface ImageRef {
   url: string;
@@ -247,6 +285,10 @@ export type BackfillConfig = Config["backfill"];
 export type GroupSender = (groupId: string, text: string, replyTo?: string) => Promise<void>;
 /** `GroupSender` bound to one group. */
 export type SendFn = (text: string, replyTo?: string) => Promise<void>;
+/** Posts the stored picture `imageId` (with optional `text` in the same message) to a group. Rejects if the group never saw it. */
+export type GroupImageSender = (groupId: string, imageId: number, text?: string, replyTo?: string) => Promise<void>;
+/** `GroupImageSender` bound to one group. */
+export type SendImageFn = (imageId: number, text?: string, replyTo?: string) => Promise<void>;
 
 /**
  * Receives the messages the agent should eventually see. It does not answer: the agent speaks
@@ -259,8 +301,31 @@ export interface GroupResponder {
 
 export type WakeConfig = Config["wake"];
 
+export type WeightRuleSpecial = "addressed" | "placeholder";
+
+/** One row of the wake-up heat table (`/wake-rules.md`, see `src/wake-rules.ts`). A row applies when any of its conditions holds (and the text is short enough). */
+export interface WeightRule {
+  name: string;
+  /** Multiplies the message's excitation: below 1 = wake sooner, above 1 = wait longer. */
+  weight: number;
+  contains: string[];
+  starts: string[];
+  ends: string[];
+  /** The row applies only to messages of at most this many characters. */
+  maxLen?: number;
+  /** `addressed`: the message is addressed to the bot; `placeholder`: the text is only "[图片]"-like placeholders. */
+  special?: WeightRuleSpecial;
+}
+
+/** How much one message excites the group's chat, and which rule rows said so. */
+export type WeighFn = (text: string, addressed: boolean) => { weight: number; rules: string[] };
+
 export interface BotOptions {
   store: MessageStore;
+  /** Stored pictures: needed to send them (`sendImage`). */
+  images?: ImageStore;
+  /** Picture capture on arrival: every picture of an incoming message is downloaded and stored in the background. */
+  pictures?: PictureArchive;
   responder: GroupResponder;
   api: QQApi;
   /** Only handle these group ids; omit for all groups. */

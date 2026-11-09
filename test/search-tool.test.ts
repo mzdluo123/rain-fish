@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { createAgent } from "../src/agent.js";
-import { makeEnv } from "./helpers.js";
+import { fauxProvider } from "@earendil-works/pi-ai";
+import { makeEnv, testModelRuntime } from "./helpers.js";
 
 async function setup() {
   const env = makeEnv();
@@ -32,5 +33,66 @@ describe("search_messages tool", () => {
   it("rejects an unparseable date instead of silently ignoring the filter", async () => {
     const { run } = await setup();
     await expect(run({ query: "牛奶", since: "last tuesday" })).rejects.toThrow(/Invalid since date/);
+  });
+});
+
+describe("search_messages with pictures", () => {
+  it("lists the picture ids of a hit and filters by with_images", async () => {
+    const env = makeEnv();
+    env.store.insert({ platform: "qq", groupId: "100", messageId: "1", userId: "42", nickname: "Alice", ts: 1_700_000_000, text: "看我家的猫[图片]" });
+    env.store.insert({ platform: "qq", groupId: "100", messageId: "2", userId: "43", nickname: "Bob", ts: 1_700_000_100, text: "猫好可爱" });
+    const id = env.images.put("100", "1", 0, Buffer.from([1, 2, 3]), "image/png");
+    const { session } = await createAgent(env);
+    const tool = session.agent.state.tools.find((t) => t.name === "search_messages")!;
+    const text = async (args: object) => (await tool.execute("t", args as never)).content.map((c) => (c.type === "text" ? c.text : "")).join("");
+    expect(await text({ query: "猫" })).toContain(`[图片: i${id}]`);
+    const only = await text({ query: "猫", with_images: true });
+    expect(only).toContain("Alice");
+    expect(only).not.toContain("Bob");
+  });
+});
+
+describe("view_image tool", () => {
+  it("returns a stored picture of this group as an image block; other groups' and unknown ids are errors", async () => {
+    const env = makeEnv();
+    const mine = env.images.put("100", "1", 0, Buffer.from([0xff, 0xd8, 0xff, 7]), "image/jpeg");
+    const theirs = env.images.put("200", "1", 0, Buffer.from([0xff, 0xd8, 0xff, 8]), "image/jpeg");
+    const faux = fauxProvider();
+    const runtime = await testModelRuntime();
+    runtime.registerNativeProvider(faux.provider);
+    const { session } = await createAgent({ ...env, model: faux.getModel(), modelRuntime: runtime });
+    const view = session.agent.state.tools.find((t) => t.name === "view_image")!;
+    if (!session.model?.input.includes("image")) return; // the faux model decides whether it reads pictures
+    const res = await view.execute("t", { image_id: `i${mine}` } as never);
+    expect(res.content.some((c) => c.type === "image" && c.mimeType === "image/jpeg")).toBe(true);
+    await expect(view.execute("t", { image_id: `i${theirs}` } as never)).rejects.toThrow(/No picture/);
+    await expect(view.execute("t", { image_id: "i9999" } as never)).rejects.toThrow(/No picture/);
+  });
+});
+
+describe("view_image tool: scaling", () => {
+  it("shows a scaled-down copy by default and a larger one with detail", async () => {
+    const { createModelImage } = await import("../src/image-resize.js");
+    const { imageDimensions } = await import("../src/context/image-size.js");
+    const { pngBytes } = await import("./helpers.js");
+    const env = makeEnv();
+    const id = env.images.put("100", "1", 0, pngBytes(1600, 1200), "image/png");
+    const faux = fauxProvider();
+    const runtime = await testModelRuntime();
+    runtime.registerNativeProvider(faux.provider);
+    const modelImage = createModelImage({ maxPixels: 200_000, maxEdge: 1568, detailMaxPixels: 600_000 });
+    const { session } = await createAgent({ ...env, modelImage, model: faux.getModel(), modelRuntime: runtime });
+    const view = session.agent.state.tools.find((t) => t.name === "view_image")!;
+    const px = async (args: object) => {
+      const res = await view.execute("t", { image_id: `i${id}`, ...args } as never);
+      const img = res.content.find((c) => c.type === "image") as { data: string };
+      const d = imageDimensions(Buffer.from(img.data, "base64"))!;
+      return d.width * d.height;
+    };
+    const normal = await px({});
+    const closer = await px({ detail: true });
+    expect(normal).toBeLessThanOrEqual(200_000);
+    expect(closer).toBeGreaterThan(normal * 2);
+    expect(closer).toBeLessThanOrEqual(600_000);
   });
 });

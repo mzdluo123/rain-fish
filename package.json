@@ -6,7 +6,8 @@
     "typecheck": "tsc",
     "test": "bun test",
     "bot": "bun src/qq-bot.ts",
-    "fs": "bun src/fs-cli.ts"
+    "fs": "bun src/fs-cli.ts",
+    "image-preview": "bun src/image-cli.ts"
   },
   "type": "module",
   "dependencies": {

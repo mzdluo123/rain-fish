@@ -100,3 +100,13 @@ describe("parseFrame: everything else", () => {
     }
   });
 });
+
+describe("outbound image segment", () => {
+  it("accepts inline base64 pictures only", async () => {
+    const { outboundSegmentSchema } = await import("../src/qq/schemas.js");
+    expect(outboundSegmentSchema.safeParse({ type: "image", data: { file: "base64://AAAA" } }).success).toBe(true);
+    for (const file of ["https://example.com/a.png", "file:///etc/passwd", "/etc/passwd", "a.png"]) {
+      expect(outboundSegmentSchema.safeParse({ type: "image", data: { file } }).success).toBe(false);
+    }
+  });
+});

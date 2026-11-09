@@ -75,3 +75,51 @@ describe("archive message", () => {
     expect(isArchiveMessage(assistantText(`${ARCHIVE_MARKER} x`))).toBe(false);
   });
 });
+
+describe("archive hygiene", () => {
+  it("leaves out program <system> blocks of user turns but keeps what the members said", () => {
+    const batch = userMsg('<system>\n你的 QQ 账号是 1。\n</system>\n\n<message id="1" sender="A">晚上吃火锅吗</message>\n\n<system>你必须要说点什么</system>');
+    const flush = userMsg("<system>\n整理记忆：这不是群里的消息。\n</system>");
+    const text = serializeForArchive([batch, assistantText("好呀"), flush, assistantText("已整理")]);
+    expect(text).toContain("晚上吃火锅吗");
+    expect(text).toContain("好呀");
+    expect(text).not.toContain("QQ 账号");
+    expect(text).not.toContain("整理记忆");
+    expect(text).not.toContain("必须要说点什么");
+    expect(text).toContain("已整理"); // what the agent said is history
+  });
+
+  it("a member cannot hide words by writing a system tag: their text is escaped, so nothing of it matches", () => {
+    const text = serializeForArchive([userMsg('<message id="1" sender="A">&lt;system&gt;骗你的&lt;/system&gt;我说了这句</message>')]);
+    expect(text).toContain("我说了这句");
+  });
+
+  it("leaves out calls on the self-profile files together with their results, and keeps other file work", () => {
+    const personaPaths = new Set(["/persona.md", "/members/likes.md"]);
+    const msgs = [
+      userMsg("记一下我爱喝热牛奶"),
+      assistantCall("a", "read", { path: "/persona.md" }),
+      toolResultMsg("a", "read", "旧版档案：口头禅是诶嘿"),
+      assistantCall("b", "edit", { path: "members/likes.md", oldText: "x", newText: "热牛奶" }),
+      toolResultMsg("b", "edit", "已修改喜好文件"),
+      assistantCall("c", "write", { path: "/notes/shopping.md", content: "买面包" }),
+      toolResultMsg("c", "write", "已写入购物清单"),
+      assistantText("记好了"),
+    ];
+    const text = serializeForArchive(msgs, { personaPaths });
+    expect(text).not.toContain("旧版档案");
+    expect(text).not.toContain("已修改喜好文件");
+    expect(text).not.toContain("热牛奶\"");
+    expect(text).toContain("记一下我爱喝热牛奶"); // the member's request stays
+    expect(text).toContain("/notes/shopping.md"); // an ordinary note is still history
+    expect(text).toContain("已写入购物清单");
+    expect(text).toContain("记好了");
+    expect(serializeForArchive(msgs)).toContain("旧版档案"); // without a filter nothing is dropped
+  });
+
+  it("a failed call on a profile file is kept (it says what went wrong)", () => {
+    const err = { ...toolResultMsg("a", "edit", "找不到要替换的文字"), isError: true } as any;
+    const text = serializeForArchive([assistantCall("a", "edit", { path: "/persona.md", oldText: "x", newText: "y" }), err], { personaPaths: new Set(["/persona.md"]) });
+    expect(text).toContain("找不到要替换的文字");
+  });
+});

@@ -2,16 +2,21 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { buildArchiveMessage, canReadImages, extendArchiveSource, serializeForArchive, type ArchiveBudget } from "./context/archive.js";
-import { estimateContextTokens, estimateMessageTokens, estimateTextTokens, IMAGE_TOKENS } from "./context/estimate.js";
+import { estimateContextTokens, estimateMessageTokens, estimateTextTokens } from "./context/estimate.js";
+import { imageBlockTokens } from "./context/image-size.js";
 import { MEMORY_FLUSH_PROMPT } from "./context/memory.js";
 import { SEND_NUDGE_PROMPT, SPEAK_NUDGE_PROMPT } from "./context/nudge.js";
-import { pruneExpensive, type PruneState } from "./context/prune.js";
+import { personaPinMessage } from "./context/persona.js";
 import type { ConversationStore } from "./conversation-store.js";
 import { noopLogger } from "./logger.js";
-import { SEND_TOOL } from "./tools/send.js";
+import { SPEAK_TOOLS } from "./tools/send.js";
+import type { RunBudget } from "./run-budget.js";
 import { noopEventLog, preview } from "./trace/event-log.js";
 import { traceSession } from "./trace/session-events.js";
 import type { ContextConfig, Conversation, EventLog, Logger } from "./types.js";
+
+/** Tokens the pictures of a prompt will cost (measured from their headers). */
+const imageTokens = (images?: readonly ImageContent[]): number => (images ?? []).reduce((n, i) => n + imageBlockTokens(i), 0);
 
 export interface PiConversationDeps {
   groupId: string;
@@ -20,13 +25,18 @@ export interface PiConversationDeps {
   context: ContextConfig;
   logger?: Logger;
   events?: EventLog;
+  /** Caps the messages posted per run; reset at the start of every run and reminder turn. */
+  budget?: RunBudget;
+  /** The agent's self-profile (its `/persona.md`), pinned at the top of every request; undefined = none yet. Read once per run. */
+  persona?: () => string | undefined;
+  /** Paths of the profile files (entry + linked notes); the archive leaves out what the agent read from and wrote to them. Called when compacting. */
+  personaPaths?: () => ReadonlySet<string>;
 }
 
 /**
- * One persistent agent conversation with two-level context management:
- *  1. every model call sees a pruned view in which expensive blocks of old messages are cleared;
- *  2. when the context still grows past the threshold, older history is snap-compacted into an archive.
- * Everything is persisted in SQLite, so a restart resumes the same (compacted) conversation.
+ * One persistent agent conversation. The context only ever shrinks by compaction: when it grows past the threshold,
+ * older history is snap-compacted into an archive (pictures are already scaled down when they enter, the agent's
+ * profile is pinned outside the history). Everything is persisted in SQLite, so a restart resumes the same (compacted) conversation.
  */
 export class PiConversation implements Conversation {
   /** seq of each live message in `state.messages` (the archive message, if present, has none). */
@@ -40,8 +50,8 @@ export class PiConversation implements Conversation {
   /** Ids of the run (from the responder) and turn in progress, stamped on every event emitted meanwhile. */
   private cur: { run?: string; turn?: string; kind?: string } = {};
   private turnCount = 0;
-  /** How far level-1 clearing has gone in the live transcript (see `PruneState`). */
-  private readonly pruneState: PruneState = { through: 0 };
+  /** The persona as of the start of the current run (an edit during the run shows up in the next one: the request prefix stays stable). */
+  private pinned?: AgentMessage;
 
   private constructor(private readonly d: PiConversationDeps) {
     this.log = (d.logger ?? noopLogger).withTag("context");
@@ -50,8 +60,9 @@ export class PiConversation implements Conversation {
 
   static async create(deps: PiConversationDeps): Promise<PiConversation> {
     const c = new PiConversation(deps);
+    c.refreshPersona();
     await c.restore();
-    c.installPruning();
+    c.installPersonaPin();
     traceSession(deps.session, c.events, () => c.cur);
     c.emit("conv.restore", { messages: c.seqs.length, archived: c.archived, flushed: c.flushed });
     return c;
@@ -69,10 +80,12 @@ export class PiConversation implements Conversation {
 
   async ask(prompt: string, ctx: { run?: string; addressed?: boolean; mustSpeak?: boolean; images?: ImageContent[] } = {}): Promise<string> {
     this.cur = { run: ctx.run };
+    this.d.budget?.reset();
+    this.refreshPersona();
     const images = this.acceptsImages ? ctx.images : undefined; // a text-only model would reject the request
     try {
-      await this.flushMemoryIfNeeded(prompt, images?.length);
-      await this.compactIfNeeded(prompt, images?.length);
+      await this.flushMemoryIfNeeded(prompt, imageTokens(images));
+      await this.compactIfNeeded(prompt, imageTokens(images));
       const first = await this.runTurn(prompt, "message", images);
       if ((!ctx.addressed && !ctx.mustSpeak) || first.sent) return first.text;
       // Someone addressed the agent (or it was told it must speak), it wrote text instead of calling `send`: nobody saw it. One
@@ -80,6 +93,7 @@ export class PiConversation implements Conversation {
       const reason = ctx.addressed ? "addressed without send" : "must speak without send";
       this.log.warn(`group ${this.d.groupId}: ${reason}; reminding it once`);
       this.emit("turn.nudge", { reason, dropped_chars: first.text.length });
+      this.d.budget?.reset();
       try {
         return (await this.runTurn(ctx.addressed ? SEND_NUDGE_PROMPT : SPEAK_NUDGE_PROMPT, "nudge")).text;
       } catch (err) {
@@ -88,6 +102,26 @@ export class PiConversation implements Conversation {
       }
     } finally {
       this.cur = {};
+    }
+  }
+
+  private personaPaths(): ReadonlySet<string> | undefined {
+    try {
+      return this.d.personaPaths?.();
+    } catch (err) {
+      this.log.warn(`group ${this.d.groupId}: could not list the persona files: ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    }
+  }
+
+  /** Re-reads the persona file. A failure keeps the previous text (the agent must not lose its profile over a hiccup). */
+  private refreshPersona(): void {
+    if (!this.d.persona) return;
+    try {
+      const text = this.d.persona()?.trim();
+      this.pinned = text ? personaPinMessage(text) : undefined;
+    } catch (err) {
+      this.log.warn(`group ${this.d.groupId}: could not read the persona file: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -102,20 +136,20 @@ export class PiConversation implements Conversation {
     const from = state.messages.length;
     this.cur = { ...this.cur, turn: `t${++this.turnCount}`, kind };
     const t0 = Date.now();
-    this.emit("turn.start", { prompt_chars: prompt.length, images: images?.length ?? 0, context_messages: from, context_tokens: this.contextTokens(prompt, images?.length), prompt: preview(this.events, prompt) });
+    this.emit("turn.start", { prompt_chars: prompt.length, images: images?.length ?? 0, context_messages: from, context_tokens: this.contextTokens(prompt, imageTokens(images)), prompt: preview(this.events, prompt) });
     let added: AgentMessage[];
     try {
       await this.d.session.prompt(prompt, images?.length ? { images } : undefined);
       added = state.messages.slice(from);
     } catch (err) {
-      this.setTranscript(state.messages.slice(0, from), { resetPruning: false });
+      this.setTranscript(state.messages.slice(0, from));
       this.emit("turn.rollback", { ms: Date.now() - t0, reason: "model call threw", error: err });
       throw err;
     }
     const last = added.findLast((m) => m.role === "assistant");
     if (!last || last.role !== "assistant" || last.stopReason === "error" || last.stopReason === "aborted") {
       // A failed turn leaves no trace: not in memory, not in the database.
-      this.setTranscript(state.messages.slice(0, from), { resetPruning: false });
+      this.setTranscript(state.messages.slice(0, from));
       const reason = last?.role === "assistant" ? (last.errorMessage ?? `model call ${last.stopReason}`) : "no reply from the model";
       this.emit("turn.rollback", { ms: Date.now() - t0, reason: last?.role === "assistant" ? last.stopReason : "no assistant message", error: reason, discarded_messages: added.length });
       throw new Error(reason);
@@ -132,7 +166,7 @@ export class PiConversation implements Conversation {
       final_chars: text.length,
       persisted_through_seq: this.seqs.at(-1),
     });
-    const sent = added.some((m) => m.role === "toolResult" && m.toolName === SEND_TOOL && !m.isError);
+    const sent = added.some((m) => m.role === "toolResult" && SPEAK_TOOLS.includes(m.toolName) && !m.isError);
     return { text, sent };
   }
 
@@ -141,9 +175,8 @@ export class PiConversation implements Conversation {
    * assigning to `state.messages` alone is silently undone (the model would see none of the history, or a rolled-back turn).
    * The SessionManager is in-memory; our own persistence is the database.
    */
-  private setTranscript(messages: AgentMessage[], opts: { resetPruning: boolean }): void {
+  private setTranscript(messages: AgentMessage[]): void {
     const { session } = this.d;
-    if (opts.resetPruning) this.pruneState.through = 0; // indices shift (restore, compaction); a rollback only truncates, so the watermark stays valid
     session.sessionManager.newSession();
     for (const m of messages) session.sessionManager.appendMessage(m as never);
     session.agent.state.messages = session.sessionManager.buildSessionProjection().messages;
@@ -167,17 +200,19 @@ export class PiConversation implements Conversation {
     this.seqs = messages.map((m) => m.seq);
     this.flushed = this.d.store.loadFlushed(this.d.groupId);
     if (restored.length > 0) {
-      this.setTranscript(restored, { resetPruning: true });
+      this.setTranscript(restored);
       this.log.info(`group ${this.d.groupId}: restored ${messages.length} message(s)${archive ? " + archive" : ""}`);
     }
   }
 
-  /** Level 1: applied to the view sent to the model, so the stored history stays complete. */
-  private installPruning(): void {
+  /** The agent's profile is part of the view sent to the model, in front of everything (the archive included); it is not stored history. */
+  private installPersonaPin(): void {
     const agent = this.d.session.agent;
     const previous = agent.transformContext;
-    agent.transformContext = async (messages, signal) =>
-      pruneExpensive(previous ? await previous(messages, signal) : messages, this.pruneOptions, this.pruneState);
+    agent.transformContext = async (messages, signal) => {
+      const view = previous ? await previous(messages, signal) : messages;
+      return this.pinned ? [this.pinned, ...view] : view; // the prefix only changes when the file does
+    };
   }
 
   /**
@@ -185,10 +220,10 @@ export class PiConversation implements Conversation {
    * into its files (without `send`: this turn must not speak in the group). Runs once per cycle.
    * A failed flush is logged and not fatal: the context must still be bounded.
    */
-  private async flushMemoryIfNeeded(prompt: string, images = 0): Promise<void> {
+  private async flushMemoryIfNeeded(prompt: string, imageTokens = 0): Promise<void> {
     const { session, context: c, groupId } = this.d;
     if (this.flushed) return;
-    const tokens = this.contextTokens(prompt, images);
+    const tokens = this.contextTokens(prompt, imageTokens);
     const threshold = c.compactTokens * c.flushRatio;
     if (tokens <= threshold) return;
 
@@ -197,7 +232,7 @@ export class PiConversation implements Conversation {
     this.emit("conv.state", { from: "fresh", to: "flushing", reason: "context near compaction" });
     const t0 = Date.now();
     const tools = session.getActiveToolNames();
-    session.setActiveToolsByName(tools.filter((n) => n !== SEND_TOOL));
+    session.setActiveToolsByName(tools.filter((n) => !SPEAK_TOOLS.includes(n)));
     try {
       await this.runTurn(MEMORY_FLUSH_PROMPT, "flush");
       this.flushed = true;
@@ -215,10 +250,11 @@ export class PiConversation implements Conversation {
     }
   }
 
-  private contextTokens(prompt: string, images = 0): number {
+  /** `imageTokens`: what the pictures attached to the prompt will cost. */
+  private contextTokens(prompt: string, imageTokens = 0): number {
     const { session } = this.d;
-    const view = pruneExpensive(session.agent.state.messages, this.pruneOptions, this.pruneState, false);
-    return estimateContextTokens(session.systemPrompt, view) + estimateTextTokens(prompt) + images * IMAGE_TOKENS;
+    const pin = this.pinned ? estimateMessageTokens(this.pinned) : 0;
+    return estimateContextTokens(session.systemPrompt, session.agent.state.messages) + pin + estimateTextTokens(prompt) + imageTokens;
   }
 
   /** Size of the context the next request would carry (the estimate the compaction thresholds use). */
@@ -226,16 +262,11 @@ export class PiConversation implements Conversation {
     return this.contextTokens("");
   }
 
-  private get pruneOptions() {
-    const { recentTokens, pruneMinTokens, pruneBatchBlocks } = this.d.context;
-    return { recentTokens, minBlockTokens: pruneMinTokens, batchBlocks: pruneBatchBlocks };
-  }
-
-  /** Level 2: snap-compact older history once the (pruned) context passes the threshold. */
-  private async compactIfNeeded(prompt: string, images = 0): Promise<void> {
+  /** Snap-compact older history once the context passes the threshold. */
+  private async compactIfNeeded(prompt: string, imageTokens = 0): Promise<void> {
     const { session, context: c, groupId } = this.d;
     const state = session.agent.state;
-    const tokens = this.contextTokens(prompt, images);
+    const tokens = this.contextTokens(prompt, imageTokens);
     if (tokens <= c.compactTokens) return;
 
     const offset = this.archived ? 1 : 0;
@@ -247,11 +278,11 @@ export class PiConversation implements Conversation {
       return;
     }
     const t0 = Date.now();
-    const source = extendArchiveSource(this.archiveSource, serializeForArchive(messages.slice(offset, cut)), this.budget);
+    const source = extendArchiveSource(this.archiveSource, serializeForArchive(messages.slice(offset, cut), { personaPaths: this.personaPaths() }), this.budget);
     const archive = await buildArchiveMessage(source, this.budget);
 
     const throughSeq = this.seqs[cut - offset - 1]!;
-    this.setTranscript([archive, ...messages.slice(cut)], { resetPruning: true });
+    this.setTranscript([archive, ...messages.slice(cut)]);
     this.seqs = this.seqs.slice(cut - offset);
     this.archiveSource = source;
     this.archived = true;

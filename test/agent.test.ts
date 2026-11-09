@@ -25,9 +25,9 @@ describe("agent", () => {
     expect(JSON.stringify(res.content)).toContain("No matches");
   });
 
-  it("exposes exactly the file tools plus search_messages and send, and no bash", async () => {
+  it("exposes exactly the file tools, search_messages, the picture tools and send/stop, and no bash", async () => {
     const { session } = await createAgent(makeEnv());
-    expect(session.getActiveToolNames().sort()).toEqual(["edit", "find", "grep", "ls", "read", "search_messages", "send", "write"]);
+    expect(session.getActiveToolNames().sort()).toEqual(["edit", "find", "grep", "ls", "read", "search_messages", "send", "send_image", "stop", "view_image", "write"]);
   });
 });
 

@@ -3,7 +3,7 @@ import { loadConfig } from "../src/config.js";
 
 describe("loadConfig", () => {
   it("has working defaults", () => {
-    expect(loadConfig({})).toEqual({ wsUrl: "ws://127.0.0.1:3001", token: undefined, groups: undefined, promptFile: "prompts/agent.md", dbPath: "data/bot.db", logLevel: "info", model: undefined, thinkingLevel: undefined, context: { recentTokens: 12_000, pruneMinTokens: 800, pruneBatchBlocks: 4, compactTokens: 60_000, archiveTokens: 20_000, flushRatio: 0.85 }, speakEveryRuns: 5, wake: { chatMeanMs: 30_000, addressedMeanMs: 2_000 }, images: { maxBytes: 3 * 1024 * 1024, maxPerRun: 4 }, backfill: { minMessages: 100, maxAgeSeconds: 5 * 86_400 }, trace: { enabled: true, dir: "data/logs", maxFileBytes: 20 * 1024 * 1024, maxFiles: 30, maxAgeDays: 14, compress: true, content: false } });
+    expect(loadConfig({})).toEqual({ wsUrl: "ws://127.0.0.1:3001", token: undefined, groups: undefined, promptFile: "prompts/agent.md", dbPath: "data/bot.db", logLevel: "info", model: undefined, thinkingLevel: undefined, cacheRetention: "long", context: { recentTokens: 12_000, compactTokens: 60_000, archiveTokens: 20_000, flushRatio: 0.85 }, speakEveryRuns: 5, wake: { chatMeanMs: 20_000, addressedMeanMs: 1_000, decayPerSec: 0.4, quietThreshold: 0.3, maxWaitMs: 120_000, addressedMaxWaitMs: 20_000, maxBatch: 30 }, images: { maxBytes: 3 * 1024 * 1024, maxPerRun: 4, storeMaxBytes: 200 * 1024 * 1024, modelMaxPixels: 800_000, modelMaxEdge: 1568, detailMaxPixels: 1_150_000 }, send: { maxPerRun: 6, gapMs: 800 }, backfill: { minMessages: 100, maxAgeSeconds: 5 * 86_400 }, trace: { enabled: true, dir: "data/logs", maxFileBytes: 20 * 1024 * 1024, maxFiles: 30, maxAgeDays: 14, compress: true, content: false } });
   });
 
   it("treats empty values (KEY= in .env) as unset, so defaults apply", () => {
@@ -32,7 +32,7 @@ describe("loadConfig", () => {
   it("reads the model and context thresholds, with defaults for anything unset", () => {
     const c = loadConfig({ MODEL: "anthropic/claude-sonnet-4-5", CONTEXT_COMPACT_TOKENS: "90000", CONTEXT_RECENT_TOKENS: "8000" });
     expect(c.model).toBe("anthropic/claude-sonnet-4-5");
-    expect(c.context).toEqual({ recentTokens: 8000, pruneMinTokens: 800, pruneBatchBlocks: 4, compactTokens: 90_000, archiveTokens: 20_000, flushRatio: 0.85 });
+    expect(c.context).toEqual({ recentTokens: 8000, compactTokens: 90_000, archiveTokens: 20_000, flushRatio: 0.85 });
     expect(loadConfig({ MODEL: "openrouter/anthropic/claude-sonnet-4.5" }).model).toBe("openrouter/anthropic/claude-sonnet-4.5");
   });
 
@@ -45,15 +45,36 @@ describe("loadConfig", () => {
   });
 });
 
+describe("prompt cache retention", () => {
+  it("defaults to 1 hour (long), can be set back to short, and rejects anything else", () => {
+    expect(loadConfig({}).cacheRetention).toBe("long");
+    expect(loadConfig({ CACHE_RETENTION: "short" }).cacheRetention).toBe("short");
+    expect(() => loadConfig({ CACHE_RETENTION: "forever" })).toThrow(/CACHE_RETENTION/);
+  });
+
+  it("is handed to Pi through PI_CACHE_RETENTION, overriding a value already in the environment", async () => {
+    const { applyCacheRetention } = await import("../src/bootstrap.js");
+    const env: Record<string, string | undefined> = { PI_CACHE_RETENTION: "short" };
+    applyCacheRetention("long", env);
+    expect(env.PI_CACHE_RETENTION).toBe("long");
+    applyCacheRetention("short", env);
+    expect(env.PI_CACHE_RETENTION).toBe("short");
+  });
+});
+
 describe("wake-up settings", () => {
-  it("default to 30s for chatter and 2s once addressed, and are read in seconds", () => {
-    expect(loadConfig({}).wake).toEqual({ chatMeanMs: 30_000, addressedMeanMs: 2_000 });
-    expect(loadConfig({ WAKE_CHAT_MEAN_SECONDS: "1.5", WAKE_ADDRESSED_MEAN_SECONDS: "0" }).wake).toEqual({ chatMeanMs: 1_500, addressedMeanMs: 0 });
+  it("default to a 20s reaction time for chatter and 1s once addressed on top of the Hawkes quiet time, and are read in seconds", () => {
+    expect(loadConfig({ WAKE_CHAT_MEAN_SECONDS: "1.5", WAKE_ADDRESSED_MEAN_SECONDS: "0" }).wake).toMatchObject({ chatMeanMs: 1_500, addressedMeanMs: 0 });
+    expect(loadConfig({}).wake).toEqual({ chatMeanMs: 20_000, addressedMeanMs: 1_000, decayPerSec: 0.4, quietThreshold: 0.3, maxWaitMs: 120_000, addressedMaxWaitMs: 20_000, maxBatch: 30 });
+    expect(loadConfig({ WAKE_DECAY_PER_SECOND: "1", WAKE_QUIET_THRESHOLD: "0.5", WAKE_MAX_WAIT_SECONDS: "60", WAKE_ADDRESSED_MAX_WAIT_SECONDS: "10", WAKE_MAX_BATCH: "5" }).wake)
+      .toMatchObject({ decayPerSec: 1, quietThreshold: 0.5, maxWaitMs: 60_000, addressedMaxWaitMs: 10_000, maxBatch: 5 });
   });
 
   it("rejects negative or non-numeric values", () => {
     expect(() => loadConfig({ WAKE_CHAT_MEAN_SECONDS: "-1" })).toThrow(/WAKE_CHAT_MEAN_SECONDS/);
     expect(() => loadConfig({ WAKE_ADDRESSED_MEAN_SECONDS: "soon" })).toThrow(/WAKE_ADDRESSED_MEAN_SECONDS/);
+    expect(() => loadConfig({ WAKE_DECAY_PER_SECOND: "0" })).toThrow(/WAKE_DECAY_PER_SECOND/);
+    expect(() => loadConfig({ WAKE_MAX_BATCH: "0" })).toThrow(/WAKE_MAX_BATCH/);
   });
 });
 
@@ -92,10 +113,3 @@ describe("THINKING_LEVEL", () => {
   });
 });
 
-describe("CONTEXT_PRUNE_BATCH_BLOCKS", () => {
-  it("defaults to 4 and must be a positive integer", () => {
-    expect(loadConfig({}).context.pruneBatchBlocks).toBe(4);
-    expect(loadConfig({ CONTEXT_PRUNE_BATCH_BLOCKS: "1" }).context.pruneBatchBlocks).toBe(1);
-    expect(() => loadConfig({ CONTEXT_PRUNE_BATCH_BLOCKS: "0" })).toThrow(/CONTEXT_PRUNE_BATCH_BLOCKS/);
-  });
-});

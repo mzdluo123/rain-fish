@@ -9,6 +9,8 @@ const db = openDb(config.dbPath); // one SQLite file holds every piece of state
 const makeConversation = await orExit(logger, () =>
   createPiConversationFactory(db, config, logger, async (_groupId, text) => {
     process.stdout.write(`\n[send] ${text}\n`);
+  }, async (_groupId, imageId, text) => {
+    process.stdout.write(`\n[send_image] i${imageId}${text ? ` ${text}` : ""}\n`);
   }, events),
 );
 const conversation = await makeConversation("cli");

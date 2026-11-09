@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { Bot, MAX_REPLY_CHARS, splitReply } from "../src/bot.js";
 import { openDb } from "../src/db/open.js";
 import { MessageStore } from "../src/store.js";
+import { ImageStore } from "../src/image-store.js";
 import { memoryEventLog, recordingLogger } from "./helpers.js";
 import type { GroupMessage, GroupResponder, OutboundSegment, QQApi } from "../src/types.js";
 
@@ -149,5 +150,48 @@ describe("splitReply", () => {
     const s = "a".repeat(3200);
     expect(splitReply(s).join("")).toBe(s);
     expect(splitReply(s).every((c) => c.length <= MAX_REPLY_CHARS)).toBe(true);
+  });
+});
+
+describe("Bot pictures", () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+  function withImages() {
+    const s = setup();
+    const db = openDb(":memory:");
+    const images = new ImageStore(db);
+    const captured: GroupMessage[] = [];
+    const bot = new Bot({ store: new MessageStore(db), images, pictures: { capture: async (m) => (captured.push(m), []), image: async () => undefined }, responder: { notify() {} }, api: { sendGroupMessage: async (groupId, message) => (s.sent.push({ groupId, message }), { messageId: "9001" }) }, events: s.trace.events });
+    bot.noteSelfId(SELF);
+    return { ...s, bot, images, captured, store: new MessageStore(db), db };
+  }
+
+  it("captures the pictures of incoming messages in the background, but not text-only or own messages", () => {
+    const { bot, captured } = withImages();
+    bot.handleGroupMessage(msg({ images: [{ url: "https://p.qpic.cn/a" }] }));
+    bot.handleGroupMessage(msg({ text: "plain" }));
+    bot.handleGroupMessage(msg({ isSelf: true, images: [{ url: "https://p.qpic.cn/b" }] }));
+    expect(captured).toHaveLength(1);
+  });
+
+  it("sendImage posts the stored picture as base64 with reply and text, and stores the sent message linked to the picture", async () => {
+    const { bot, images, sent, db } = withImages();
+    const id = images.put("100", "m1", 0, png, "image/png");
+    await bot.sendImage("100", id, " 给你 ", "55");
+    expect(sent[0]!.message).toEqual([
+      { type: "reply", data: { id: "55" } },
+      { type: "image", data: { file: `base64://${png.toString("base64")}` } },
+      { type: "text", data: { text: "给你" } },
+    ]);
+    const row = new MessageStore(db).get("qq", "100", "9001");
+    expect(row?.text).toBe("[图片]给你");
+    expect(images.idsOf("100", "9001")).toEqual([id]);
+  });
+
+  it("sendImage refuses a picture this group never saw, without calling the API", async () => {
+    const { bot, images, sent } = withImages();
+    const id = images.put("200", "m1", 0, png, "image/png");
+    await expect(bot.sendImage("100", id)).rejects.toThrow(/No picture/);
+    await expect(bot.sendImage("100", 999)).rejects.toThrow(/No picture/);
+    expect(sent).toHaveLength(0);
   });
 });
