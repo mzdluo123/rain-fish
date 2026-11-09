@@ -140,6 +140,20 @@ describe("snap compaction", () => {
     expect(store.load("g1").messages.map((m) => m.seq)).toEqual([5, 6]); // numbering continues past the archived seqs
   });
 
+  it("clear() forgets live messages and the archive, in memory and in the database, and the conversation starts over", async () => {
+    const { conv, session, db, store } = await setup({ script: bigScript });
+    await fill(conv, 2);
+    await conv.compact();
+    await conv.ask("归档之后的问题");
+    expect(conv.clear()).toBe(2);
+    expect(roles(session)).toEqual([]);
+    expect(store.load("g1")).toEqual({ archive: undefined, messages: [] });
+    expect(db.query("SELECT COUNT(*) n FROM agent_archives").get()).toEqual({ n: 0 });
+    await conv.ask("清空之后的问题");
+    expect(roles(session)).toEqual(["user", "assistant"]);
+    expect(store.load("g1").messages.map((m) => m.seq)).toEqual([1, 2]);
+  });
+
   it("past the threshold, retires old turns into one archive message of image frames and keeps the recent turns", async () => {
     const { conv, session, db, entries } = await setup({ script: bigScript });
     await fill(conv, 8);

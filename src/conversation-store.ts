@@ -60,6 +60,18 @@ export class ConversationStore {
       .immediate();
   }
 
+  /** Forgets the whole conversation of a group: live messages, archive and flush flag. Returns how many live messages were dropped. */
+  clear(groupId: string): number {
+    return this.db
+      .transaction(() => {
+        const { changes } = this.db.query("DELETE FROM agent_messages WHERE group_id = ?").run(groupId);
+        this.db.query("DELETE FROM agent_archives WHERE group_id = ?").run(groupId);
+        this.db.query("DELETE FROM conversation_flags WHERE group_id = ?").run(groupId);
+        return changes;
+      })
+      .immediate();
+  }
+
   /** Drops messages with seq > `afterSeq` (rolling back a failed turn). */
   truncate(groupId: string, afterSeq: number): void {
     this.db.query("DELETE FROM agent_messages WHERE group_id = ? AND seq > ?").run(groupId, afterSeq);

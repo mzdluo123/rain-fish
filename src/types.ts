@@ -377,6 +377,8 @@ export interface Conversation {
   readonly acceptsImages?: boolean;
   /** Archives the whole live context now (console `compact`); undefined = nothing to archive. Never called during a run. */
   compact?(): Promise<{ archived: number; tokensBefore: number; tokensAfter: number } | undefined>;
+  /** Forgets the whole context including the archive (console `clear`); returns the live messages dropped. Never called during a run. */
+  clear?(): number;
 }
 
 export type ConversationFactory = (groupId: string) => Promise<Conversation>;

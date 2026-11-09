@@ -246,23 +246,33 @@ export class PiResponder implements GroupResponder {
     group.tail = group.tail.then(() => this.run(groupId, group));
   }
 
-  /**
-   * Compacts the group's whole context now, queued behind any run in progress so it never overlaps one. Resolves to the
-   * result (undefined = nothing to archive or the conversation cannot compact); rejects if the compaction itself fails.
-   */
-  compact(groupId: string): Promise<{ archived: number; tokensBefore: number; tokensAfter: number } | undefined> {
+  /** Runs `job` on the group's conversation, queued behind any run in progress so it never overlaps one. */
+  private exclusive<R>(groupId: string, job: (c: Conversation) => R | Promise<R>): Promise<R> {
     const group = this.group(groupId);
-    const job = group.tail.then(async () => {
+    const result = group.tail.then(async () => {
       let conversation = this.conversations.get(groupId);
       if (!conversation) {
         conversation = this.createConversation(groupId);
         this.conversations.set(groupId, conversation);
         conversation.catch(() => this.conversations.delete(groupId));
       }
-      return (await conversation).compact?.();
+      return job(await conversation);
     });
-    group.tail = job.then(() => undefined, () => undefined);
-    return job;
+    group.tail = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  /**
+   * Compacts the group's whole context now. Resolves to the result (undefined = nothing to archive or the conversation
+   * cannot compact); rejects if the compaction itself fails.
+   */
+  compact(groupId: string): Promise<{ archived: number; tokensBefore: number; tokensAfter: number } | undefined> {
+    return this.exclusive(groupId, (c) => c.compact?.());
+  }
+
+  /** Forgets the group's whole context (archive included) now. Resolves to the live messages dropped (undefined = cannot clear). */
+  clear(groupId: string): Promise<number | undefined> {
+    return this.exclusive(groupId, (c) => c.clear?.());
   }
 
   /**

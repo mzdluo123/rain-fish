@@ -274,6 +274,24 @@ export class PiConversation implements Conversation {
     return this.archiveThrough(state.messages.length, offset, this.contextTokens(""), "manual");
   }
 
+  /**
+   * Forgets the whole context, archive included (the console `clear` command); the group's chat log, the files and the
+   * profile stay. Must not overlap a run: the responder serialises it with the group's runs. Returns the live messages dropped.
+   */
+  clear(): number {
+    const dropped = this.d.store.clear(this.d.groupId);
+    const tokens = this.contextTokens("");
+    this.setTranscript([]);
+    this.seqs = [];
+    this.archiveSource = "";
+    this.archived = false;
+    this.flushed = false;
+    this.cur = {};
+    this.log.success(`group ${this.d.groupId}: cleared the context (${dropped} message(s), ~${tokens} tokens)`);
+    this.emit("conv.state", { from: "any", to: "fresh", reason: "manual clear", dropped_messages: dropped, tokens_before: tokens });
+    return dropped;
+  }
+
   /** Snap-compact older history once the context passes the threshold. */
   private async compactIfNeeded(prompt: string, imageTokens = 0): Promise<void> {
     const { context: c, groupId } = this.d;

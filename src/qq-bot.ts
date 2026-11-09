@@ -90,13 +90,22 @@ logger.info(`database ${config.dbPath} · log level ${config.logLevel} · groups
 responder.restore((groupId) => !config.groups || config.groups.has(groupId)); // messages that were queued when the last process stopped
 client.start();
 
-// Console commands (stdin lines, e.g. in the tmux pane): `compact` archives every group's whole context right away.
+// Console commands (stdin lines, e.g. in the tmux pane): `compact` archives every group's whole context right away;
+// `clear` forgets it entirely (live messages and archive; the chat log, files and profile stay).
 const conversationStore = new ConversationStore(db);
 createInterface({ input: process.stdin }).on("line", (line) => {
-  if (line.trim() !== "compact") return;
+  const cmd = line.trim();
+  if (cmd !== "compact" && cmd !== "clear") return;
   const ids = config.groups ? [...config.groups] : conversationStore.groupIds();
-  if (ids.length === 0) logger.info("compact: no conversation to compact");
+  if (ids.length === 0) logger.info(`${cmd}: no conversation`);
   for (const id of ids) {
+    if (cmd === "clear") {
+      responder.clear(id).then(
+        (n) => logger.info(n === undefined ? `clear: group ${id}: not supported` : `clear: group ${id}: dropped ${n} message(s) and the archive`),
+        (err) => logger.error(`clear: group ${id} failed: ${err instanceof Error ? err.message : String(err)}`),
+      );
+      continue;
+    }
     responder.compact(id).then(
       (r) => logger.info(r ? `compact: group ${id}: archived ${r.archived} message(s), ~${r.tokensBefore} -> ~${r.tokensAfter} tokens` : `compact: group ${id}: nothing to archive`),
       (err) => logger.error(`compact: group ${id} failed: ${err instanceof Error ? err.message : String(err)}`),
