@@ -56,7 +56,7 @@ export const configSchema = z
     // --- wake-ups ---
     // The wake-up comes after the chat has gone quiet (Hawkes excitation, see src/wake-intensity.ts) plus a random "reaction time".
     /** Mean seconds of the random reaction time (exponential) added after the chat has gone quiet, while only ordinary chatter is pending. */
-    WAKE_CHAT_MEAN_SECONDS: z.coerce.number().nonnegative().default(20),
+    WAKE_CHAT_MEAN_SECONDS: z.coerce.number().nonnegative().default(45),
     /** Same, once a pending message @-mentions the bot or replies to it. 0 = no extra delay. */
     WAKE_ADDRESSED_MEAN_SECONDS: z.coerce.number().nonnegative().default(1),
     /** Hawkes decay rate beta, per second: how fast a burst of messages cools down (0.4 -> half-life ~1.7 s). */
