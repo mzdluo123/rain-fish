@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
+import { imageKey } from "../src/context/image-key.js";
 import { isArchiveMessage } from "../src/context/archive.js";
 import { PiConversation } from "../src/conversation.js";
 import { ConversationStore } from "../src/conversation-store.js";
@@ -370,6 +371,28 @@ describe("event log", () => {
     const conv = await PiConversation.create({ groupId: "g", session: session as never, store: new ConversationStore(openDb(":memory:")), context: ctx, events: trace.events });
     await conv.ask("你好呀");
     expect(trace.records("turn.start")[0]!.prompt).toBe("你好呀");
+  });
+});
+
+describe("pictures already in the context", () => {
+  const image = (tag: string): ImageContent => ({ type: "image", data: tag, mimeType: "image/png" });
+
+  it("lists the pictures of the live transcript (user turns and tool results) and forgets them with the history", async () => {
+    const { conv } = await setup({ script: bigScript });
+    expect(conv.imagesInContext().size).toBe(0);
+    await conv.ask("看图", { images: [image("AAA"), image("BBB")] });
+    const keys = conv.imagesInContext();
+    expect(keys.size).toBe(2);
+    expect(keys.has(imageKey(image("AAA")))).toBe(true);
+    await conv.compact(); // the archive keeps no copy of the picture itself
+    expect(conv.imagesInContext().has(imageKey(image("AAA")))).toBe(false);
+  });
+
+  it("survives a restart (read back from the stored messages)", async () => {
+    const a = await setup();
+    await a.conv.ask("看图", { images: [image("CCC")] });
+    const b = await setup({ db: a.db });
+    expect(b.conv.imagesInContext().has(imageKey(image("CCC")))).toBe(true);
   });
 });
 
