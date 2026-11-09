@@ -8,6 +8,7 @@ bun start                     # CLI REPL with the agent
 bun run bot                   # QQ bot (see below)
 bun test                      # bun:test, no API key needed
 bunx tsc                      # typecheck
+bun run lint                  # Biome linter (biome.json; no formatter)
 ```
 
 Configuration: `cp .env.example .env` and edit. Bun loads `.env` automatically (no dotenv dependency); real environment variables override it, and `KEY=` with an empty value counts as unset. Every setting is validated at startup. `.env` is git-ignored, `.env.example` documents every variable.

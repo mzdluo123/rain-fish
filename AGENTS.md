@@ -7,6 +7,7 @@ Bun + TypeScript. Pi-based (`@earendil-works/pi-coding-agent`) assistant that re
 - `bun start` — REPL. Needs a provider API key or Pi auth in `~/.pi/agent`.
 - `bun test` — bun:test; offline, no API key.
 - `bunx tsc` — typecheck (`noEmit`; covers `src/`, `test/`).
+- `bun run lint` — Biome linter (`biome.json`, lint only, formatter off). Rules that fight the code's idioms are off (`!` after `noUncheckedIndexedAccess`, comma/assign-in-expression one-liners, expression-bodied `forEach`); errors fail, warnings are advisory.
 
 ## Layout
 - `src/vfs.ts` — `VirtualFs`: a POSIX-like filesystem in ONE table (`files`, migration 0003). No host disk is involved, so there is nothing to escape: paths resolve against `/`, no symlinks. Size quotas (`VfsLimits`) stop the agent from filling the DB. `src/vfs-ops.ts` plugs it into Pi's read/write/edit/ls; `src/tools/vfs-search.ts` has our own `find`/`grep` (Pi's built-ins shell out to `fd`/`rg` on the host disk). `src/vfs-io.ts` + `src/fs-cli.ts` (`bun run fs ...`) import/export between host dirs and the DB.

@@ -4,6 +4,7 @@
   "scripts": {
     "start": "bun src/index.ts",
     "typecheck": "tsc",
+    "lint": "biome lint",
     "test": "bun test",
     "bot": "bun src/qq-bot.ts",
     "fs": "bun src/fs-cli.ts",
@@ -20,6 +21,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.6.6",
     "@types/bun": "^1.4.4",
     "typescript": "^7.0.2"
   }
