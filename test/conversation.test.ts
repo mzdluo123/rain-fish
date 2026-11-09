@@ -5,6 +5,7 @@ import { isArchiveMessage } from "../src/context/archive.js";
 import { PiConversation } from "../src/conversation.js";
 import { ConversationStore } from "../src/conversation-store.js";
 import { openDb } from "../src/db/open.js";
+import { MessageStore } from "../src/store.js";
 import type { ContextConfig } from "../src/types.js";
 import { assistantCall, assistantError, assistantText, memoryEventLog, recordingLogger, tokensOf, toolResultMsg } from "./helpers.js";
 
@@ -142,12 +143,14 @@ describe("snap compaction", () => {
 
   it("clear() forgets live messages and the archive, in memory and in the database, and the conversation starts over", async () => {
     const { conv, session, db, store } = await setup({ script: bigScript });
+    new MessageStore(db).insert({ platform: "qq", groupId: "g1", messageId: "m1", userId: "u", nickname: "小明", ts: 1, text: "群聊记录" });
     await fill(conv, 2);
     await conv.compact();
     await conv.ask("归档之后的问题");
     expect(conv.clear()).toBe(2);
     expect(roles(session)).toEqual([]);
     expect(store.load("g1")).toEqual({ archive: undefined, messages: [] });
+    expect(new MessageStore(db).search({ query: "群聊记录", groupId: "g1" })).toHaveLength(1); // the group's chat log is not part of the context
     expect(db.query("SELECT COUNT(*) n FROM agent_archives").get()).toEqual({ n: 0 });
     await conv.ask("清空之后的问题");
     expect(roles(session)).toEqual(["user", "assistant"]);
