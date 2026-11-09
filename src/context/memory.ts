@@ -6,12 +6,12 @@ import { systemMessage } from "../xml.js";
  */
 export const MEMORY_FLUSH_PROMPT = systemMessage(
   [
-    "整理记忆：这不是群里的消息。",
-    "对话上下文快满了，较早的对话马上会被压缩成存档，细节会丢失。请现在回顾这段对话，把你觉得重要、以后还用得上的内容写进你的文件系统：",
-    "群友的喜好和约定、群里的梗、答应过别人的事、你自己设定的变化、值得留存的结论等；只出现一次的琐事和任何人的隐私不要记，消息可以被找回，不用记忆。",
-    "- 优先用 `edit` 补充已有的文件，没有合适的再新建；先用 `read`/`ls` 看看现有的记忆是什么样，避免重复。",
-    "- 记忆写进 .md 文件，单个文件不超过 10KB。放不下时新建文件，把内容原样挪过去（不要压缩、概括或丢信息），并用 Markdown 链接把它们串起来，",
-    "- 记录“是的” “存在的” “对的”直接表达的内容，而不是“不要” “拒绝” “不可以”的反面表达的内容",
-    "- 本轮不能发消息，也不用回复。整理完直接结束；没什么需要记的，直接结束即可。",
+    "Memory flush: this is not a group message.",
+    "The context is nearly full; older conversation is about to be compressed into an archive and details will be lost. Review the conversation now and write what matters and will still be useful into your filesystem:",
+    "members' preferences and agreements, running jokes, promises made, changes to your own setup, conclusions worth keeping. Skip one-off trivia and anyone's private information; messages can be searched later, they need no memory.",
+    "- Prefer `edit` to extend an existing file; create a new one only if none fits. `read`/`ls` the existing memory first to avoid duplicates.",
+    "- Write memory into .md files of at most 10KB each. When one does not fit, create a new file and move the content over as is (do not compress, summarize or drop information), and link the files together with Markdown links.",
+    "- Record what IS, EXISTS and is TRUE in positive statements, not what is not, refused or forbidden.",
+    "- You cannot send messages in this turn and need not reply. Finish when done; if there is nothing to record, just finish.",
   ].join("\n"),
 );

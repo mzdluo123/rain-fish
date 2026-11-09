@@ -6,35 +6,35 @@ import { escapeText, systemMessage } from "../xml.js";
  */
 export const SEND_NUDGE_PROMPT = systemMessage(
   [
-    "提醒：这不是群里的消息。",
-    "刚才有人 @ 了你或回复了你，但你上一轮没有调用 `send`，所以群里没有任何人看到你写的文字。",
-    "- 如果你想回应对方：现在就调用 `send`（可用 `reply_to` 引用对方的消息 id），说完调用 `stop`。",
-    "- 如果你确实决定不回应：调用 `stop`，不要再写文字。",
+    "Reminder: this is not a group message.",
+    "Someone @-mentioned or replied to you, but your last turn did not call `send`, so nobody in the group saw your text.",
+    "- To respond: call `send` now (`reply_to` quotes their message id), then `stop`.",
+    "- If you really decided not to respond: call `stop` and write no more text.",
   ].join("\n"),
 );
 
 /** Appended to a batch every few runs: the agent must join the conversation instead of only watching. */
-export const SPEAK_NOTICE = systemMessage("你必须要说点什么来插入群友的聊天：这一轮请调用 `send` 发消息（或 `send_image` 发图）接上当前话题，说完调用 `stop`，不要沉默。");
+export const SPEAK_NOTICE = systemMessage("You must say something to join the conversation: this run, call `send` (or `send_image`) with a message that fits the current topic, then `stop`. Do not stay silent.");
 
 /** The single retry turn when a run that carried `SPEAK_NOTICE` ended without a successful `send`. */
 export const SPEAK_NUDGE_PROMPT = systemMessage(
-  ["提醒：这不是群里的消息。", "上一轮要求你必须说点什么来插入群友的聊天，但你没有成功调用 `send`，群里没有任何人看到你的话。现在就调用 `send` 发一条贴合当前话题的消息，然后调用 `stop`。"].join("\n"),
+  ["Reminder: this is not a group message.", "You were required to say something, but your last turn did not successfully call `send`, so nobody saw it. Call `send` now with a message that fits the current topic, then `stop`."].join("\n"),
 );
 
 const LISTED_MAX = 20;
 
 function listUnlinked(paths: readonly string[]): string {
   const shown = paths.slice(0, LISTED_MAX).map((p) => `- ${escapeText(p)}`);
-  if (paths.length > LISTED_MAX) shown.push(`- …另有 ${paths.length - LISTED_MAX} 个`);
+  if (paths.length > LISTED_MAX) shown.push(`- …and ${paths.length - LISTED_MAX} more`);
   return shown.join("\n");
 }
 
-const LINK_RULE = "规则：每个 .md 和 .py 文件都要能从 `/persona.md` 出发，沿 Markdown 链接（如 `[主题](/notes/topic.md)`、`[脚本](/scripts/calc.py)`，用以 `/` 开头的绝对路径）一层层找到。";
+const LINK_RULE = "Rule: every .md and .py file must be reachable from `/persona.md` by Markdown links with absolute paths (e.g. `[topic](/notes/topic.md)`, `[script](/scripts/calc.py)`).";
 
 /** Appended to every batch while `/persona.md` does not reach every `.md`/`.py` file (the check runs at the start of every run). */
 export const linkNotice = (paths: readonly string[]): string =>
-  systemMessage([`档案检查：下面的文件还没有被 \`/persona.md\` 的树链接到。`, LINK_RULE, listUnlinked(paths), "这一轮请先用 `edit` 在合适的父文件里加上指向它们的链接，再做其他事。"].join("\n"));
+  systemMessage(["Notes check: the files below are not linked from the `/persona.md` tree.", LINK_RULE, listUnlinked(paths), "This run, first use `edit` to add links to them in a suitable parent file, then do the rest."].join("\n"));
 
 /** The single reminder turn after a run that created or wrote files and left some `.md`/`.py` file outside the tree. */
 export const linkNudgePrompt = (paths: readonly string[]): string =>
-  systemMessage(["提醒：这不是群里的消息。", "你刚才创建或写入了文件，档案检查发现下面的文件没有被 `/persona.md` 的树链接到。", LINK_RULE, listUnlinked(paths), "现在就用 `edit` 在合适的父文件里加上指向它们的链接，完成后调用 `stop`。"].join("\n"));
+  systemMessage(["Reminder: this is not a group message.", "You just created or wrote files; the notes check found the files below are not linked from the `/persona.md` tree.", LINK_RULE, listUnlinked(paths), "Use `edit` now to add links to them in a suitable parent file, then call `stop`."].join("\n"));
