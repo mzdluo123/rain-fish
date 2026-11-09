@@ -561,7 +561,7 @@ describe("archive across several compactions", () => {
 });
 
 describe("compaction after the prompt cache expired", () => {
-  const cc: CacheCompactConfig = { enabled: true, ttlMs: 3_600_000, minSavedTokens: 1000, minSavedRatio: 0.3 };
+  const cc: CacheCompactConfig = { enabled: true, ttlMs: 3_600_000, minSavedTokens: 1000, minSavedRatio: 0.3, clearFallback: false };
   const lastRequestEnd = (s: { state: { messages: AgentMessage[] } }) => s.state.messages.findLast((m) => m.role === "assistant")!.timestamp;
   /** Builds a conversation with ~3 turns of history, below the normal compaction threshold. */
   async function withHistory(over: Parameters<typeof setup>[0] = {}) {
@@ -595,6 +595,29 @@ describe("compaction after the prompt cache expired", () => {
     await t.conv.ask("好久不见");
     expect(t.store.load("g1").archive).toBeUndefined();
     expect(t.trace.records("compact.skip").some((r) => /too little/.test(String(r.reason)))).toBe(true);
+  });
+
+  it("forgets the whole context (archive too) when compacting saves too little but clearing saves enough", async () => {
+    const t = await withHistory({ cacheCompact: { ...cc, clearFallback: true, minSavedTokens: 1500, minSavedRatio: 0.2 } });
+    await t.conv.compact(); // archive in place: now only a small amount is live, so compacting again cannot save much
+    await t.conv.ask("小问题");
+    expect(t.store.load("g1").archive).toBeDefined();
+    const before = t.store.load("g1").archive!.sourceText.length;
+    t.at(cc.ttlMs + 1);
+    await t.conv.ask("好久不见");
+    const after = t.store.load("g1");
+    expect(after.archive).toBeUndefined();
+    expect(roles(t.session)).toEqual(["user", "assistant"]);
+    expect(before).toBeGreaterThan(0);
+    expect(t.trace.records("cache.clear")).toHaveLength(1);
+  });
+
+  it("clears nothing when even clearing saves too little", async () => {
+    const t = await withHistory({ cacheCompact: { ...cc, clearFallback: true, minSavedTokens: 1_000_000 } });
+    t.at(cc.ttlMs + 1);
+    await t.conv.ask("好久不见");
+    expect(roles(t.session)[0]).toBe("user");
+    expect(t.store.load("g1").messages.length).toBeGreaterThan(2);
   });
 
   it("does nothing when disabled, when not configured, or with no request in the history", async () => {
