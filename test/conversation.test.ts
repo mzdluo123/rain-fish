@@ -12,14 +12,16 @@ import { assistantCall, assistantError, assistantText, memoryEventLog, recording
 type Script = (prompt: string, n: number) => AgentMessage[];
 
 /** The slice of AgentSession that PiConversation touches. `script` produces the messages a model turn appends. */
-function fakeSession(opts: { vision?: boolean; script?: Script } = {}) {
+function fakeSession(opts: { vision?: boolean; script?: Script; speech?: { muted: boolean } } = {}) {
   const state = { messages: [] as AgentMessage[] };
   let turn = 0;
   let active = ["read", "edit", "send"];
   const toolsPerPrompt: string[][] = [];
+  const promptLog: { text: string; muted: boolean }[] = [];
   const session = {
     state,
     toolsPerPrompt,
+    promptLog,
     sessionManager: {
       entries: [] as AgentMessage[],
       newSession() { this.entries = []; return undefined; },
@@ -31,6 +33,7 @@ function fakeSession(opts: { vision?: boolean; script?: Script } = {}) {
     systemPrompt: "",
     async prompt(text: string, o?: { images?: ImageContent[] }) {
       toolsPerPrompt.push([...active]);
+      promptLog.push({ text, muted: opts.speech?.muted ?? false });
       // Like Pi 1.x: the request is built from the SessionManager's transcript, not from whatever was assigned to state.messages.
       state.messages = [...session.sessionManager.entries];
       session.promptSaw.push(state.messages.length);
@@ -56,13 +59,14 @@ function fakeSession(opts: { vision?: boolean; script?: Script } = {}) {
 const ctx: ContextConfig = { recentTokens: 1500, compactTokens: 6000, archiveTokens: 3000, flushRatio: 10 };
 
 async function setup(over: { vision?: boolean; script?: Script; context?: Partial<ContextConfig>; db?: ReturnType<typeof openDb>; group?: string; persona?: () => string | undefined; personaPaths?: () => ReadonlySet<string>; unlinked?: () => string[]; cacheCompact?: CacheCompactConfig; now?: () => number } = {}) {
+  const speech = { muted: false, mute() { this.muted = true; }, unmute() { this.muted = false; } };
   const db = over.db ?? openDb(":memory:");
   const store = new ConversationStore(db);
   const rec = recordingLogger();
-  const session = fakeSession(over);
+  const session = fakeSession({ ...over, speech });
   const trace = memoryEventLog();
-  const conv = await PiConversation.create({ groupId: over.group ?? "g1", session: session as never, store, context: { ...ctx, ...over.context }, logger: rec.logger, events: trace.events, persona: over.persona, personaPaths: over.personaPaths, unlinked: over.unlinked, cacheCompact: over.cacheCompact, now: over.now });
-  return { db, store, session, conv, entries: rec.entries, trace };
+  const conv = await PiConversation.create({ groupId: over.group ?? "g1", session: session as never, store, context: { ...ctx, ...over.context }, logger: rec.logger, events: trace.events, persona: over.persona, personaPaths: over.personaPaths, unlinked: over.unlinked, cacheCompact: over.cacheCompact, now: over.now, speech });
+  return { db, store, session, conv, entries: rec.entries, trace, speech };
 }
 const roles = (s: { state: { messages: AgentMessage[] } }) => s.state.messages.map((m) => (isArchiveMessage(m) ? "archive" : m.role));
 const bigScript: Script = (_p, n) => [assistantText(`第${n}轮的回答 ` + tokensOf(380))];
@@ -231,17 +235,18 @@ describe("snap compaction", () => {
 describe("memory flush", () => {
   // flush at 9000 tokens, compaction at 12000; roomy enough that a fresh compaction ends below the flush line (the snap frames themselves cost ~3k)
   const flushCtx = { flushRatio: 0.75, compactTokens: 12_000 };
-  const isFlush = (t: string[]) => !t.includes("send");
+  const isFlush = (p: { text: string }) => p.text.includes("整理记忆");
   const fill = async (conv: PiConversation, rounds: number) => {
     for (let i = 1; i <= rounds; i++) await conv.ask(`第${i}个问题 ` + tokensOf(380));
   };
 
-  it("gives the agent one turn without `send` to save memory before history is compacted, once per cycle", async () => {
+  it("gives the agent one turn in which posting is refused to save memory before history is compacted, once per cycle", async () => {
     const { conv, session, entries } = await setup({ script: bigScript, context: flushCtx });
     await fill(conv, 14);
-    expect(session.toolsPerPrompt.filter(isFlush)).toHaveLength(1);
-    expect(session.toolsPerPrompt.at(-1)).toContain("send"); // tools are restored afterwards
-    expect(session.getActiveToolNames()).toContain("send");
+    expect(session.promptLog.filter(isFlush)).toHaveLength(1);
+    expect(session.promptLog.filter(isFlush).every((p) => p.muted)).toBe(true); // posting is refused during the flush turn...
+    expect(session.promptLog.filter((p) => !isFlush(p)).some((p) => p.muted)).toBe(false); // ...and only then
+    expect(session.toolsPerPrompt.every((t) => t.includes("send"))).toBe(true); // the tool list never changes (prompt cache)
     const msgs = entries.map((e) => e.msg);
     const flushed = msgs.findIndex((m) => m.includes("memory flush done"));
     const compacted = msgs.findIndex((m) => m.includes("compacted"));
@@ -252,7 +257,7 @@ describe("memory flush", () => {
   it("does nothing while the context is comfortably below the ratio", async () => {
     const { conv, session } = await setup({ script: bigScript, context: flushCtx });
     await fill(conv, 3);
-    expect(session.toolsPerPrompt.filter(isFlush)).toHaveLength(0);
+    expect(session.promptLog.filter(isFlush)).toHaveLength(0);
   });
 
   it("the flush turn is part of the persisted history, so the archive keeps what the agent did", async () => {
@@ -265,25 +270,25 @@ describe("memory flush", () => {
   it("a restart does not forget that the flush already ran in this cycle, and the next cycle flushes again", async () => {
     const a = await setup({ script: bigScript, context: flushCtx });
     await fill(a.conv, 10); // flushed once, not yet compacted
-    expect(a.session.toolsPerPrompt.filter(isFlush)).toHaveLength(1);
+    expect(a.session.promptLog.filter(isFlush)).toHaveLength(1);
 
     const b = await setup({ db: a.db, script: bigScript, context: flushCtx }); // "restart"
     await b.conv.ask("重启后的问题 " + tokensOf(380));
-    expect(b.session.toolsPerPrompt.filter(isFlush)).toHaveLength(0); // not asked a second time
+    expect(b.session.promptLog.filter(isFlush)).toHaveLength(0); // not asked a second time
 
     await fill(b.conv, 12); // compaction happens, which starts a new cycle...
     expect(b.entries.some((e) => e.msg.includes("compacted"))).toBe(true);
-    expect(b.session.toolsPerPrompt.filter(isFlush).length).toBeGreaterThanOrEqual(1); // ...whose flush is due again
+    expect(b.session.promptLog.filter(isFlush).length).toBeGreaterThanOrEqual(1); // ...whose flush is due again
   });
 
   it("a failed flush is logged and does not block the message; it is retried on the next ask and leaves no trace", async () => {
     const script: Script = (p, n) => (p.includes("整理记忆") ? [assistantError("overloaded")] : bigScript(p, n));
-    const { conv, session, entries, store } = await setup({ script, context: flushCtx });
+    const { conv, session, entries, store, speech } = await setup({ script, context: flushCtx });
     await fill(conv, 11);
     expect(entries.some((e) => e.level === "warn" && e.msg.includes("memory flush failed") && e.msg.includes("overloaded"))).toBe(true);
-    expect(session.toolsPerPrompt.filter(isFlush).length).toBeGreaterThanOrEqual(2); // retried
+    expect(session.promptLog.filter(isFlush).length).toBeGreaterThanOrEqual(2); // retried
     expect(JSON.stringify(store.load("g1").messages)).not.toContain("整理记忆");
-    expect(session.getActiveToolNames()).toContain("send");
+    expect(speech.muted).toBe(false); // un-muted even though the flush failed
     expect(roles(session).filter((r) => r === "user")).toHaveLength(11); // every real question answered
   });
 });
