@@ -349,6 +349,8 @@ export interface OneBotClientOptions {
   minBackoffMs?: number;
   maxBackoffMs?: number;
   requestTimeoutMs?: number;
+  /** Force a reconnect when no frame (events or heartbeats) arrives for this long; 0 disables. Default 90s. */
+  idleTimeoutMs?: number;
   logger?: Logger;
 }
 

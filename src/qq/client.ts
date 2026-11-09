@@ -29,6 +29,7 @@ export class OneBotClient implements QQApi, QQHistoryApi {
   private readonly minBackoff: number;
   private readonly maxBackoff: number;
   private readonly requestTimeout: number;
+  private readonly idleTimeout: number;
   private readonly log: Logger;
   private readonly events: EventLog;
 
@@ -36,6 +37,7 @@ export class OneBotClient implements QQApi, QQHistoryApi {
     this.minBackoff = opts.minBackoffMs ?? 1000;
     this.maxBackoff = opts.maxBackoffMs ?? 30_000;
     this.requestTimeout = opts.requestTimeoutMs ?? 10_000;
+    this.idleTimeout = opts.idleTimeoutMs ?? 90_000;
     this.backoff = this.minBackoff;
     this.log = (opts.logger ?? noopLogger).withTag("qq");
     this.events = opts.events ?? noopEventLog;
@@ -179,22 +181,42 @@ export class OneBotClient implements QQApi, QQHistoryApi {
     const { url, token } = this.opts;
     const ws = new WebSocket(url, token ? { headers: { Authorization: `Bearer ${token}` } } : undefined);
     this.ws = ws;
-    ws.onopen = () => {
-      this.backoff = this.minBackoff;
-      this.log.success(`connected to ${url}`);
-      this.events.emit("qq.connected", {});
-      this.opts.onConnect?.();
-    };
-    ws.onmessage = (ev) => this.handleFrame(ev.data);
-    ws.onerror = () => {}; // always followed by onclose
-    ws.onclose = () => {
+    let closed = false;
+    let idle: ReturnType<typeof setTimeout> | undefined;
+    // Handles both a real close and a silently dead (half-open) socket; runs once per socket.
+    const onDead = (why: string) => {
+      if (closed) return;
+      closed = true;
+      clearTimeout(idle);
+      ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
+      try {
+        ws.close();
+      } catch {}
       this.rejectAll(new Error("OneBot connection closed"));
-      if (this.stopped) return;
-      this.log.warn(`disconnected, retrying in ${this.backoff}ms`);
+      if (this.stopped || this.ws !== ws) return;
+      this.log.warn(`disconnected (${why}), retrying in ${this.backoff}ms`);
       this.events.emit("qq.disconnected", { retry_in_ms: this.backoff });
       this.timer = setTimeout(() => this.connect(), this.backoff);
       this.backoff = Math.min(this.backoff * 2, this.maxBackoff);
     };
+    const armIdle = () => {
+      if (this.idleTimeout <= 0) return;
+      clearTimeout(idle);
+      idle = setTimeout(() => onDead(`no frames for ${this.idleTimeout}ms`), this.idleTimeout);
+    };
+    ws.onopen = () => {
+      this.backoff = this.minBackoff;
+      armIdle();
+      this.log.success(`connected to ${url}`);
+      this.events.emit("qq.connected", {});
+      this.opts.onConnect?.();
+    };
+    ws.onmessage = (ev) => {
+      armIdle();
+      this.handleFrame(ev.data);
+    };
+    ws.onerror = () => {}; // always followed by onclose
+    ws.onclose = () => onDead("closed");
   }
 }
 
