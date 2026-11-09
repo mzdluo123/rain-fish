@@ -64,4 +64,10 @@ export class ConversationStore {
   truncate(groupId: string, afterSeq: number): void {
     this.db.query("DELETE FROM agent_messages WHERE group_id = ? AND seq > ?").run(groupId, afterSeq);
   }
+
+  /** Every group that has a stored conversation (messages or archive). */
+  groupIds(): string[] {
+    const rows = this.db.query("SELECT group_id FROM agent_messages UNION SELECT group_id FROM agent_archives").all() as { group_id: string }[];
+    return rows.map((r) => r.group_id);
+  }
 }

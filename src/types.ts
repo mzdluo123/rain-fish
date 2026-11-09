@@ -375,6 +375,8 @@ export interface Conversation {
   ask(prompt: string, ctx?: { run?: string; addressed?: boolean; mustSpeak?: boolean; images?: ImageContent[] }): Promise<string>;
   /** The model can read images; unset/false: the responder does not fetch any. */
   readonly acceptsImages?: boolean;
+  /** Archives the whole live context now (console `compact`); undefined = nothing to archive. Never called during a run. */
+  compact?(): Promise<{ archived: number; tokensBefore: number; tokensAfter: number } | undefined>;
 }
 
 export type ConversationFactory = (groupId: string) => Promise<Conversation>;

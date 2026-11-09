@@ -125,6 +125,21 @@ describe("snap compaction", () => {
     expect(db.query("SELECT COUNT(*) n FROM agent_archives").get()).toEqual({ n: 0 });
   });
 
+  it("compact() archives the whole context below the threshold, persists it, and the conversation carries on", async () => {
+    const { conv, session, db, store } = await setup({ script: bigScript });
+    expect(await conv.compact()).toBeUndefined(); // empty: nothing to archive
+    await fill(conv, 2);
+    expect(roles(session)).not.toContain("archive");
+    const r = await conv.compact();
+    expect(r?.archived).toBe(4);
+    expect(roles(session)).toEqual(["archive"]);
+    expect(store.load("g1").messages).toHaveLength(0);
+    expect((db.query("SELECT source_text FROM agent_archives WHERE group_id = 'g1'").get() as { source_text: string }).source_text).toContain("第1个问题");
+    await conv.ask("compact之后的问题");
+    expect(roles(session)).toEqual(["archive", "user", "assistant"]);
+    expect(store.load("g1").messages.map((m) => m.seq)).toEqual([5, 6]); // numbering continues past the archived seqs
+  });
+
   it("past the threshold, retires old turns into one archive message of image frames and keeps the recent turns", async () => {
     const { conv, session, db, entries } = await setup({ script: bigScript });
     await fill(conv, 8);

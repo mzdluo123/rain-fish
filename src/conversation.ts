@@ -262,21 +262,39 @@ export class PiConversation implements Conversation {
     return this.contextTokens("");
   }
 
+  /**
+   * Archives everything now, whatever the size (the console `compact` command). Must not overlap a run: the responder
+   * serialises it with the group's runs. Returns undefined when there is nothing to archive.
+   */
+  async compact(): Promise<{ archived: number; tokensBefore: number; tokensAfter: number } | undefined> {
+    const state = this.d.session.agent.state;
+    const offset = this.archived ? 1 : 0;
+    if (state.messages.length <= offset) return undefined;
+    this.cur = {};
+    return this.archiveThrough(state.messages.length, offset, this.contextTokens(""), "manual");
+  }
+
   /** Snap-compact older history once the context passes the threshold. */
   private async compactIfNeeded(prompt: string, imageTokens = 0): Promise<void> {
-    const { session, context: c, groupId } = this.d;
-    const state = session.agent.state;
+    const { context: c, groupId } = this.d;
     const tokens = this.contextTokens(prompt, imageTokens);
     if (tokens <= c.compactTokens) return;
 
     const offset = this.archived ? 1 : 0;
-    const messages = state.messages;
-    const cut = this.findCut(messages, offset);
+    const cut = this.findCut(this.d.session.agent.state.messages, offset);
     if (cut <= offset) {
       this.log.warn(`group ${groupId}: context ~${tokens} tokens but no complete turn is older than the recent window; not compacting`);
       this.emit("compact.skip", { tokens, threshold: c.compactTokens, reason: "no complete turn older than the recent window" });
       return;
     }
+    await this.archiveThrough(cut, offset, tokens, "threshold");
+  }
+
+  /** Moves messages [offset, cut) into the archive (memory + database); `cut` must be a turn start or the end of the transcript. */
+  private async archiveThrough(cut: number, offset: number, tokens: number, reason: "threshold" | "manual") {
+    const { session, groupId } = this.d;
+    const state = session.agent.state;
+    const messages = state.messages;
     const t0 = Date.now();
     const source = extendArchiveSource(this.archiveSource, serializeForArchive(messages.slice(offset, cut), { personaPaths: this.personaPaths() }), this.budget);
     const archive = await buildArchiveMessage(source, this.budget);
@@ -291,8 +309,9 @@ export class PiConversation implements Conversation {
     this.d.store.archive(groupId, throughSeq, source);
     const after = estimateContextTokens(session.systemPrompt, state.messages);
     this.log.success(`group ${groupId}: compacted ${cut - offset} message(s) into the archive (~${tokens} -> ~${after} tokens)`);
-    this.emit("compact.done", { archived_messages: cut - offset, kept_messages: messages.length - cut, tokens_before: tokens, tokens_after: after, archive_chars: source.length, through_seq: throughSeq, ms: Date.now() - t0 });
-    this.emit("conv.state", { from: wasFlushed ? "flushed" : "fresh", to: "fresh", reason: "compaction" });
+    this.emit("compact.done", { reason, archived_messages: cut - offset, kept_messages: messages.length - cut, tokens_before: tokens, tokens_after: after, archive_chars: source.length, through_seq: throughSeq, ms: Date.now() - t0 });
+    this.emit("conv.state", { from: wasFlushed ? "flushed" : "fresh", to: "fresh", reason: reason === "manual" ? "manual compaction" : "compaction" });
+    return { archived: cut - offset, tokensBefore: tokens, tokensAfter: after };
   }
 
   /**

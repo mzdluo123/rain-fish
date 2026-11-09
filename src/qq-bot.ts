@@ -1,3 +1,5 @@
+import { createInterface } from "node:readline";
+import { ConversationStore } from "./conversation-store.js";
 import { backfillAll } from "./backfill.js";
 import { Bot } from "./bot.js";
 import { bootstrap, orExit } from "./bootstrap.js";
@@ -87,6 +89,20 @@ process.on("uncaughtExceptionMonitor", (err) => events.emit("proc.crash", { erro
 logger.info(`database ${config.dbPath} · log level ${config.logLevel} · groups ${config.groups ? [...config.groups].join(",") : "all"}`);
 responder.restore((groupId) => !config.groups || config.groups.has(groupId)); // messages that were queued when the last process stopped
 client.start();
+
+// Console commands (stdin lines, e.g. in the tmux pane): `compact` archives every group's whole context right away.
+const conversationStore = new ConversationStore(db);
+createInterface({ input: process.stdin }).on("line", (line) => {
+  if (line.trim() !== "compact") return;
+  const ids = config.groups ? [...config.groups] : conversationStore.groupIds();
+  if (ids.length === 0) logger.info("compact: no conversation to compact");
+  for (const id of ids) {
+    responder.compact(id).then(
+      (r) => logger.info(r ? `compact: group ${id}: archived ${r.archived} message(s), ~${r.tokensBefore} -> ~${r.tokensAfter} tokens` : `compact: group ${id}: nothing to archive`),
+      (err) => logger.error(`compact: group ${id} failed: ${err instanceof Error ? err.message : String(err)}`),
+    );
+  }
+});
 
 const shutdown = (signal: string) => {
   logger.info("shutting down");

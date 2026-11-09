@@ -247,6 +247,25 @@ export class PiResponder implements GroupResponder {
   }
 
   /**
+   * Compacts the group's whole context now, queued behind any run in progress so it never overlaps one. Resolves to the
+   * result (undefined = nothing to archive or the conversation cannot compact); rejects if the compaction itself fails.
+   */
+  compact(groupId: string): Promise<{ archived: number; tokensBefore: number; tokensAfter: number } | undefined> {
+    const group = this.group(groupId);
+    const job = group.tail.then(async () => {
+      let conversation = this.conversations.get(groupId);
+      if (!conversation) {
+        conversation = this.createConversation(groupId);
+        this.conversations.set(groupId, conversation);
+        conversation.catch(() => this.conversations.delete(groupId));
+      }
+      return (await conversation).compact?.();
+    });
+    group.tail = job.then(() => undefined, () => undefined);
+    return job;
+  }
+
+  /**
    * Never rejects: a failed run is logged and its batch dropped (the turn is rolled back by the conversation; a
    * retry could loop forever). The batch leaves the database only once the run is over, so a crash replays it.
    */
