@@ -364,6 +364,26 @@ describe("PiResponder wake-ups", () => {
     expect(trace.records("wake.scheduled")[0]!.excitation).toBe(4);
   });
 
+  it("applies live timing overrides (chat_mean_seconds, addressed_mean_seconds, decay_per_second, quiet_threshold)", () => {
+    const trace = memoryEventLog();
+    let timing = { chatMeanSeconds: 20, addressedMeanSeconds: 2, decayPerSec: 0.5, quietThreshold: 0.25 };
+    const r = new PiResponder(async () => fakeConversation([]).conversation, {
+      wake: wakeCfg(45_000, 1_000, { decayPerSec: 0.4, quietThreshold: 0.3 }),
+      timing: () => timing,
+      random: () => 0.5,
+      events: trace.events,
+    });
+    r.notify(msg("1", "今天吃什么", "1"), false);
+    // quiet = ln(1 / 0.25) / 0.5 = 2.772588s; reaction = 20000 * ln(2) = 13862.94ms -> total ~16636ms
+    expect(trace.records("wake.scheduled")[0]).toMatchObject({
+      mean_ms: 20_000,
+      quiet_ms: Math.round((Math.log(1 / 0.25) / 0.5) * 1000),
+    });
+    timing = { chatMeanSeconds: 20, addressedMeanSeconds: 3, decayPerSec: 0.5, quietThreshold: 0.25 };
+    r.notify(msg("1", "今天吃什么", "2"), true);
+    expect(trace.records("wake.scheduled")[1]!.mean_ms).toBe(3_000);
+  });
+
   it("the maximum wait ends a chat that never goes quiet; a full batch wakes the agent at once", async () => {
     const hawkes = { decayPerSec: 0.4, quietThreshold: 0.3, maxWaitMs: 10_000 };
     const log: string[] = [];

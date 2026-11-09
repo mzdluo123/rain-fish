@@ -58,7 +58,7 @@ const makeConversation = await orExit(logger, () =>
 const wakeRules = createWakeRules({ fs: new VirtualFs(db), logger }); // /wake-rules.yaml in the agent's filesystem: created if missing, reloaded when the agent edits it
 const responder = new PiResponder(
   makeConversation,
-  { wake: config.wake, weigh: wakeRules.weigh, speakEveryRuns: config.speakEveryRuns, speakStore: new SpeakStore(db), pending: new PendingStore(db), images: promptImages, pictures, logger, events },
+  { wake: config.wake, weigh: wakeRules.weigh, timing: wakeRules.timing, speakEveryRuns: config.speakEveryRuns, speakStore: new SpeakStore(db), pending: new PendingStore(db), images: promptImages, pictures, logger, events },
 );
 let backfilled = false;
 const client = new OneBotClient({

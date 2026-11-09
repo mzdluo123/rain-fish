@@ -378,6 +378,22 @@ export interface GroupResponder {
 
 export type WakeConfig = Config["wake"];
 
+/**
+ * Optional timing overrides in `/wake-rules.yaml` (`timing:`): experience-level wake-up parameters the agent can tune itself,
+ * bounded in `src/wake-rules.ts` and still capped by `WAKE_MAX_WAIT_SECONDS` / `WAKE_ADDRESSED_MAX_WAIT_SECONDS` / `WAKE_MAX_BATCH`.
+ * Omitted fields fall back to the host's `.env` defaults (`WakeConfig`).
+ */
+export interface WakeTiming {
+  /** Overrides `WAKE_CHAT_MEAN_SECONDS` (mean exponential reaction time for ordinary chatter, seconds). */
+  chatMeanSeconds?: number;
+  /** Overrides `WAKE_ADDRESSED_MEAN_SECONDS` (mean exponential reaction time once addressed, seconds). */
+  addressedMeanSeconds?: number;
+  /** Overrides `WAKE_DECAY_PER_SECOND` (Hawkes decay rate beta, per second). */
+  decayPerSec?: number;
+  /** Overrides `WAKE_QUIET_THRESHOLD` (excitation threshold for the chat to count as quiet). */
+  quietThreshold?: number;
+}
+
 export type WeightRuleSpecial = "addressed" | "placeholder";
 
 /** One rule of the wake-up heat table (`/wake-rules.yaml`, see `src/wake-rules.ts`). A row applies when any of its conditions holds (and the text is short enough). */
@@ -392,6 +408,12 @@ export interface WeightRule {
   maxLen?: number;
   /** `addressed`: the message is addressed to the bot; `placeholder`: the text is only "[图片]"-like placeholders. */
   special?: WeightRuleSpecial;
+}
+
+/** Parsed contents of `/wake-rules.yaml`: optional timing overrides and the keyword weight rules. */
+export interface WakeRulesFile {
+  timing?: WakeTiming;
+  rules: WeightRule[];
 }
 
 /** How much one message excites the group's chat, and which rule rows said so. */

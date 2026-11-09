@@ -32,24 +32,26 @@ export class WakeIntensity {
 
   constructor(private readonly p: IntensityParams) {}
 
+  /** Milliseconds from `now` until the excitation is down to the threshold: how long the chat must stay quiet. */
+  quietIn(now: number, overrides?: Partial<IntensityParams>): number {
+    const decayPerSec = overrides?.decayPerSec ?? this.p.decayPerSec;
+    const threshold = overrides?.threshold ?? this.p.threshold;
+    const cur = this.at(now, decayPerSec);
+    if (cur <= threshold) return 0;
+    if (threshold <= 0 || decayPerSec <= 0) return Number.POSITIVE_INFINITY; // never cools: the caller's maximum wait ends it
+    return (Math.log(cur / threshold) / decayPerSec) * 1000;
+  }
+
   /** Excitation at `now` (ms), in units of one ordinary message. */
-  at(now: number): number {
+  at(now: number, decayPerSec = this.p.decayPerSec): number {
     if (this.s === 0) return 0;
     const dt = Math.max(0, now - this.last) / 1000; // a clock that stepped back must not make the excitation grow
-    return this.s * Math.exp(-this.p.decayPerSec * dt);
+    return this.s * Math.exp(-decayPerSec * dt);
   }
 
   /** A message with the given weight arrived at `now` (ms). */
-  add(now: number, weight: number): void {
-    this.s = this.at(now) + weight;
+  add(now: number, weight: number, decayPerSec = this.p.decayPerSec): void {
+    this.s = this.at(now, decayPerSec) + weight;
     this.last = Math.max(now, this.last);
-  }
-
-  /** Milliseconds from `now` until the excitation is down to the threshold: how long the chat must stay quiet. */
-  quietIn(now: number): number {
-    const cur = this.at(now);
-    if (cur <= this.p.threshold) return 0;
-    if (this.p.threshold <= 0 || this.p.decayPerSec <= 0) return Number.POSITIVE_INFINITY; // never cools: the caller's maximum wait ends it
-    return (Math.log(cur / this.p.threshold) / this.p.decayPerSec) * 1000;
   }
 }

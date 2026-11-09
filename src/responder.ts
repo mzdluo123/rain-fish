@@ -2,7 +2,7 @@ import type { ImageContent } from "@earendil-works/pi-ai";
 import { noopLogger } from "./logger.js";
 import { WakeIntensity } from "./wake-intensity.js";
 import { defaultWeigh } from "./wake-rules.js";
-import type { Conversation, ConversationFactory, GroupMessage, GroupResponder, EventLog, ImageSource, Logger, PendingMessage, PictureArchive, StoredPicture, WakeConfig, WeighFn } from "./types.js";
+import type { Conversation, ConversationFactory, GroupMessage, GroupResponder, EventLog, ImageSource, Logger, PendingMessage, PictureArchive, StoredPicture, WakeConfig, WakeTiming, WeighFn } from "./types.js";
 import { imageRef } from "./image-store.js";
 import type { PendingStore } from "./pending-store.js";
 import { noopEventLog } from "./trace/event-log.js";
@@ -145,6 +145,8 @@ export interface PiResponderOptions {
   speakStore?: SpeakStore;
   /** Weight of a message for the heat of the chat (the agent's `/wake-rules.yaml`); omit for the default table. */
   weigh?: WeighFn;
+  /** Live timing overrides from `/wake-rules.yaml` (`timing:`); omitted fields fall back to `wake`. */
+  timing?: () => WakeTiming | undefined;
   /** Uniform [0, 1) source; replaceable in tests. */
   random?: () => number;
   logger?: Logger;
@@ -217,7 +219,8 @@ export class PiResponder implements GroupResponder {
     // A restored message was heard before the restart: it starts a clock but adds no excitation.
     if (origin === "live") {
       const { weight, rules } = (this.opts.weigh ?? defaultWeigh)(p.msg.text, p.addressed);
-      group.intensity.add(now, weight);
+      const decayPerSec = this.opts.timing?.()?.decayPerSec ?? this.opts.wake.decayPerSec;
+      group.intensity.add(now, weight, decayPerSec);
       group.events.emit("wake.weight", { message_id: p.msg.messageId, weight, rules });
     }
     this.schedule(groupId, group, now);
@@ -226,9 +229,14 @@ export class PiResponder implements GroupResponder {
   /** (Re)computes the wake-up of a group: quiet time of the Hawkes process + random reaction time, within the maximum waits. */
   private schedule(groupId: string, group: GroupState, now: number): void {
     const w = this.opts.wake;
+    const t = this.opts.timing?.();
     const addressed = group.addressedSince !== undefined;
-    const mean = addressed ? w.addressedMeanMs : w.chatMeanMs;
-    const quiet = group.intensity.quietIn(now);
+    const chatMeanMs = t?.chatMeanSeconds !== undefined ? t.chatMeanSeconds * 1000 : w.chatMeanMs;
+    const addressedMeanMs = t?.addressedMeanSeconds !== undefined ? t.addressedMeanSeconds * 1000 : w.addressedMeanMs;
+    const decayPerSec = t?.decayPerSec ?? w.decayPerSec;
+    const threshold = t?.quietThreshold ?? w.quietThreshold;
+    const mean = addressed ? addressedMeanMs : chatMeanMs;
+    const quiet = group.intensity.quietIn(now, { decayPerSec, threshold });
     const reaction = sampleExponential(mean, this.random);
     const deadline = Math.min((group.waitingSince ?? now) + w.maxWaitMs, addressed ? group.addressedSince! + w.addressedMaxWaitMs : Number.POSITIVE_INFINITY);
     const full = group.pending.length >= w.maxBatch;
@@ -242,7 +250,7 @@ export class PiResponder implements GroupResponder {
       addressed,
       replaced,
       quiet_ms: Number.isFinite(quiet) ? Math.round(quiet) : null,
-      excitation: Math.round(group.intensity.at(now) * 1000) / 1000,
+      excitation: Math.round(group.intensity.at(now, decayPerSec) * 1000) / 1000,
       capped: !full && quiet + reaction > deadline - now,
       full,
     });

@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { openDb } from "../src/db/open.js";
 import { VirtualFs } from "../src/vfs.js";
 import { createVfsOperations } from "../src/vfs-ops.js";
-import { createWakeRules, DEFAULT_RULES, LEGACY_WAKE_RULES_PATH, MAX_RULES, parseWakeRules, renderWakeRules, WAKE_RULES_PATH, weighMessage } from "../src/wake-rules.js";
+import { createWakeRules, DEFAULT_RULES, LEGACY_WAKE_RULES_PATH, MAX_RULES, parseWakeRules, parseWakeRulesFile, renderWakeRules, WAKE_RULES_PATH, weighMessage } from "../src/wake-rules.js";
 import { recordingLogger } from "./helpers.js";
 
 const w = (text: string, addressed = false) => weighMessage(DEFAULT_RULES, text, addressed).weight;
@@ -58,8 +58,13 @@ describe("the YAML file format", () => {
     expect(parseWakeRules("rules: []")).toEqual([]);
   });
 
-  it("reads plain YAML: block lists, comments, lowercased words, optional fields", () => {
-    const rules = parseWakeRules(`# mine
+  it("reads plain YAML: block lists, comments, lowercased words, optional fields, optional timing", () => {
+    const parsed = parseWakeRulesFile(`# mine
+timing:
+  chat_mean_seconds: 30
+  addressed_mean_seconds: 2
+  decay_per_second: 0.5
+  quiet_threshold: 0.25
 rules:
   - name: a   # inline comment
     weight: 2
@@ -71,10 +76,17 @@ rules:
     weight: 0.5
     special: addressed
 `);
-    expect(rules).toEqual([
-      { name: "a", weight: 2, contains: ["x", "y z"], starts: [], ends: [], maxLen: 5 },
-      { name: "b", weight: 0.5, contains: [], starts: [], ends: [], special: "addressed" },
-    ]);
+    expect(parsed).toEqual({
+      timing: { chatMeanSeconds: 30, addressedMeanSeconds: 2, decayPerSec: 0.5, quietThreshold: 0.25 },
+      rules: [
+        { name: "a", weight: 2, contains: ["x", "y z"], starts: [], ends: [], maxLen: 5 },
+        { name: "b", weight: 0.5, contains: [], starts: [], ends: [], special: "addressed" },
+      ],
+    });
+    expect(parseWakeRulesFile(renderWakeRules(DEFAULT_RULES, parsed.timing))).toEqual({
+      timing: parsed.timing,
+      rules: DEFAULT_RULES as never,
+    });
   });
 
   const r = (body: string) => `rules:\n  - name: a\n    weight: 1\n${body}`;
@@ -84,6 +96,15 @@ rules:
     ["not a mapping", "- name: a", /rules/],
     ["no rules key", "other: 1", /rules/],
     ["unknown top-level key", "rules: []\nextra: 1", /extra|Unrecognized/],
+    ["unknown timing key", "timing:\n  max_wait_seconds: 999\nrules: []", /timing.*max_wait_seconds|Unrecognized/],
+    ["chat_mean_seconds too small", "timing:\n  chat_mean_seconds: 5\nrules: []", /timing\.chat_mean_seconds: must be at least 10/],
+    ["chat_mean_seconds too big", "timing:\n  chat_mean_seconds: 300\nrules: []", /timing\.chat_mean_seconds: must be at most 120/],
+    ["addressed_mean_seconds negative", "timing:\n  addressed_mean_seconds: -1\nrules: []", /timing\.addressed_mean_seconds: must be at least 0/],
+    ["addressed_mean_seconds too big", "timing:\n  addressed_mean_seconds: 25\nrules: []", /timing\.addressed_mean_seconds: must be at most 10/],
+    ["decay_per_second too small", "timing:\n  decay_per_second: 0.05\nrules: []", /timing\.decay_per_second: must be at least 0.15/],
+    ["decay_per_second too big", "timing:\n  decay_per_second: 2\nrules: []", /timing\.decay_per_second: must be at most 1/],
+    ["quiet_threshold too small", "timing:\n  quiet_threshold: 0.01\nrules: []", /timing\.quiet_threshold: must be at least 0.1/],
+    ["quiet_threshold too big", "timing:\n  quiet_threshold: 0.95\nrules: []", /timing\.quiet_threshold: must be at most 0.8/],
     ["unknown field in a rule", r("    contains: [x]\n    colour: red\n"), /rules\[1\].*colour|Unrecognized/],
     ["weight not a number", r("    contains: [x]\n").replace("weight: 1", "weight: heavy"), /rules\[1\]\.weight/],
     ["weight too big", r("    contains: [x]\n").replace("weight: 1", "weight: 9"), /weight: must be at most 5/],
@@ -148,12 +169,14 @@ describe("/wake-rules.yaml in the agent's filesystem", () => {
     expect(fs.readText("/persona.md")).toBe("- [唤醒规则](/wake-rules.yaml)：调整唤醒权重\n");
   });
 
-  it("an edit by the agent takes effect on the next message (reload)", async () => {
+  it("an edit by the agent takes effect on the next message (reload, including timing)", async () => {
     const { ops, live, log } = setup();
     expect(live.weigh("哈哈哈哈", false).weight).toBe(0.8);
+    expect(live.timing()).toBeUndefined();
     const text = (await ops.edit.readFile(WAKE_RULES_PATH)).toString();
-    await ops.edit.writeFile(WAKE_RULES_PATH, text.replace("weight: 0.8", "weight: 0.4"));
+    await ops.edit.writeFile(WAKE_RULES_PATH, `timing:\n  chat_mean_seconds: 20\n${text.replace("weight: 0.8", "weight: 0.4")}`);
     expect(live.weigh("哈哈哈哈", false).weight).toBe(0.4);
+    expect(live.timing()).toEqual({ chatMeanSeconds: 20 });
     expect(log.entries.some((e) => e.level === "info" && /reloaded \d+ wake rule/.test(e.msg))).toBe(true);
   });
 
@@ -161,6 +184,7 @@ describe("/wake-rules.yaml in the agent's filesystem", () => {
     const { fs, ops, live } = setup();
     const before = fs.readText(WAKE_RULES_PATH);
     await expect(ops.edit.writeFile(WAKE_RULES_PATH, before.replace("weight: 0.8", "weight: lots"))).rejects.toThrow(/was not changed.*weight/);
+    await expect(ops.edit.writeFile(WAKE_RULES_PATH, `timing:\n  chat_mean_seconds: 1\n${before}`)).rejects.toThrow(/was not changed.*timing\.chat_mean_seconds/);
     await expect(ops.write.writeFile(WAKE_RULES_PATH, "I deleted everything")).rejects.toThrow(/was not changed/);
     expect(fs.readText(WAKE_RULES_PATH)).toBe(before);
     expect(live.weigh("哈哈哈哈", false).weight).toBe(0.8);
