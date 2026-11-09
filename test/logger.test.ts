@@ -23,7 +23,7 @@ describe("createLogger (plain output, used when piped)", () => {
     log.warn("careful");
     log.error("boom");
     expect(out).toHaveLength(2);
-    expect(out[0]).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} INFO    \[qq\] hello 你好\n$/);
+    expect(out[0]).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} INFO {4}\[qq\] hello 你好\n$/);
     expect(out[1]).toMatch(/ SUCCESS \[qq\] connected\n$/);
     expect(err.map((l) => l.replace(/^\S+ \S+ /, ""))).toEqual(["WARN    [qq] careful\n", "ERROR   [qq] boom\n"]);
   });

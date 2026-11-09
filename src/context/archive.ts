@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import path from "node:path";
-import type { Model } from "@earendil-works/pi-ai";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import { frames, plannedFrameTokens, renderMany, resolveShape, serializeConversation } from "@oh-my-pi/snapcompact";
 import { estimateTextTokens } from "./estimate.js";
 
@@ -16,7 +16,7 @@ export function isArchiveMessage(m: AgentMessage): boolean {
 }
 
 /** Whether the model can read image frames; otherwise the archive is kept as plain text. */
-export const canReadImages = (model: Model<any> | undefined): boolean => Boolean(model?.input.includes("image"));
+export const canReadImages = (model: Model<Api> | undefined): boolean => Boolean(model?.input.includes("image"));
 
 /** `<system>…</system>` blocks are program text (identity notice, picture numbering, must-speak notice, flush and reminder prompts), never members' words. */
 const SYSTEM_BLOCK = /<system>[\s\S]*?<\/system>/g;
@@ -65,7 +65,7 @@ export function serializeForArchive(messages: readonly AgentMessage[], filter: A
 }
 
 /** How many frames fit the archive budget for this model (each frame is billed ~3k tokens). */
-export function maxFramesFor(model: Model<any> | undefined, archiveTokens: number): number {
+export function maxFramesFor(model: Model<Api> | undefined, archiveTokens: number): number {
   const perFrame = plannedFrameTokens(resolveShape(model));
   return Math.max(1, Math.floor(archiveTokens / perFrame));
 }
@@ -82,7 +82,7 @@ export function trimOldest(text: string, fits: (t: string) => boolean): string {
 }
 
 export interface ArchiveBudget {
-  model: Model<any> | undefined;
+  model: Model<Api> | undefined;
   archiveTokens: number;
 }
 

@@ -4,8 +4,8 @@ import { memoryEventLog } from "./helpers.js";
 
 /** A stand-in for AgentSession.subscribe that lets the test push Pi events. */
 function fakePi() {
-  const listeners: ((e: any) => void)[] = [];
-  return { subscribe: (l: (e: any) => void) => (listeners.push(l), () => {}), push: (e: unknown) => listeners.forEach((l) => l(e)) };
+  const listeners: ((e: unknown) => void)[] = [];
+  return { subscribe: (l: (e: unknown) => void) => (listeners.push(l), () => {}), push: (e: unknown) => listeners.forEach((l) => l(e)) };
 }
 const usage = { input: 100, output: 20, cacheRead: 5, cacheWrite: 1, totalTokens: 126, cost: { total: 0.002 } };
 const assistant = (content: unknown[], extra: object = {}) => ({ role: "assistant", provider: "anthropic", model: "claude-x", stopReason: "stop", usage, content, ...extra });

@@ -81,6 +81,7 @@ export const tokensOf = (n: number, ch = "字") => ch.repeat(n);
 export function memoryEventLog(opts: { captureContent?: boolean } = {}) {
   const lines: string[] = [];
   const events = JsonlEventLog.create({ write: (l) => void lines.push(l) }, { captureContent: opts.captureContent ?? false, boot: "test" });
+  // biome-ignore lint/suspicious/noExplicitAny: parsed JSONL records; tests read nested fields of whatever an event carries
   const all = () => lines.map((l) => JSON.parse(l) as Record<string, any>);
   return {
     events,

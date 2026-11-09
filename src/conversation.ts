@@ -219,7 +219,7 @@ export class PiConversation implements Conversation {
       throw err;
     }
     const last = added.findLast((m) => m.role === "assistant");
-    if (!last || last.role !== "assistant" || last.stopReason === "error" || last.stopReason === "aborted") {
+    if (last?.role !== "assistant" || last.stopReason === "error" || last.stopReason === "aborted") {
       // A failed turn leaves no trace: not in memory, not in the database.
       this.setTranscript(state.messages.slice(0, from));
       const reason = last?.role === "assistant" ? (last.errorMessage ?? `model call ${last.stopReason}`) : "no reply from the model";
@@ -368,7 +368,7 @@ export class PiConversation implements Conversation {
   /** Idle time since the last model request ended (the provider's cache is refreshed by it); undefined = no request in the history. */
   private cacheIdleMs(): number | undefined {
     const last = this.d.session.agent.state.messages.findLast((m) => m.role === "assistant");
-    if (!last || last.role !== "assistant") return undefined;
+    if (last?.role !== "assistant") return undefined;
     return (this.d.now?.() ?? Date.now()) - (last.timestamp + (last.durationMs ?? 0));
   }
 

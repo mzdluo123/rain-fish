@@ -59,7 +59,7 @@ describe("receiving", () => {
         ws.send(JSON.stringify(groupEvent(1, 100, "群里讨论牛奶")));
       },
     });
-    const { received, logs, entries } = connect(server.port!, { token: "secret" });
+    const { received, entries } = connect(server.port!, { token: "secret" });
     await until(() => received.some((m) => m.messageId === "1"));
     expect(received.map((m) => m.messageId).sort()).toEqual(["0", "1"]); // the `time: "yesterday"` event never arrived
     expect(received.find((m) => m.messageId === "1")).toMatchObject({ groupId: "100", text: "群里讨论牛奶", selfId: "10001" });
@@ -178,7 +178,7 @@ describe("history API", () => {
   });
 
   it("get_group_msg_history: sends the paging request and converts items, filling fields NapCat leaves out and skipping bad items", async () => {
-    const requests: any[] = [];
+    const requests: { params: Record<string, unknown> }[] = [];
     const server = fakeNapCat({
       onMessage(ws, data) {
         const req = JSON.parse(data);
@@ -200,7 +200,7 @@ describe("history API", () => {
     expect(entries.some((e) => e.level === "warn" && e.msg.includes("skipped 1 invalid"))).toBe(true);
 
     await client.getGroupHistory("100", undefined, 50);
-    expect(requests[1].params.message_seq).toBeUndefined(); // the latest messages
+    expect(requests[1]!.params.message_seq).toBeUndefined(); // the latest messages
   });
 
   it("rejects when the API reports a failure", async () => {

@@ -1,3 +1,5 @@
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "bun:test";
 import {
   buildArchiveMessage,
@@ -12,8 +14,8 @@ import {
 import { frames } from "@oh-my-pi/snapcompact";
 import { assistantCall, assistantText, toolResultMsg, userMsg } from "./helpers.js";
 
-const vision: any = { api: "openai-responses", id: "gpt-5.5", provider: "openai", input: ["text", "image"] };
-const textOnly: any = { ...vision, input: ["text"] };
+const vision = { api: "openai-responses", id: "gpt-5.5", provider: "openai", input: ["text", "image"] } as unknown as Model<Api>;
+const textOnly = { ...vision, input: ["text"] } as Model<Api>;
 
 describe("archive text", () => {
   it("serializes messages (without thinking) so they can be rendered", () => {
@@ -118,7 +120,7 @@ describe("archive hygiene", () => {
   });
 
   it("a failed call on a profile file is kept (it says what went wrong)", () => {
-    const err = { ...toolResultMsg("a", "edit", "找不到要替换的文字"), isError: true } as any;
+    const err = { ...toolResultMsg("a", "edit", "找不到要替换的文字"), isError: true } as AgentMessage;
     const text = serializeForArchive([assistantCall("a", "edit", { path: "/persona.md", oldText: "x", newText: "y" }), err], { personaPaths: new Set(["/persona.md"]) });
     expect(text).toContain("找不到要替换的文字");
   });

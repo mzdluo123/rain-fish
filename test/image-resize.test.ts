@@ -4,7 +4,7 @@ import { imageBlockTokens, imageDimensions } from "../src/context/image-size.js"
 import { createModelImage, planScale, shrinkImage } from "../src/image-resize.js";
 import { pngBytes } from "./helpers.js";
 
-const Image = (Bun as any).Image;
+const Image = Bun.Image;
 const dimsOf = (b: Uint8Array) => imageDimensions(b);
 
 describe("planScale", () => {

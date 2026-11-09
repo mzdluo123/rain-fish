@@ -5,7 +5,7 @@
  */
 import type { Database } from "bun:sqlite";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { ImageContent, Model } from "@earendil-works/pi-ai";
+import type { Api, ImageContent, Model } from "@earendil-works/pi-ai";
 import type {
   EditOperations,
   ModelRuntime,
@@ -128,7 +128,7 @@ export interface AgentDeps {
   /** The system prompt, used verbatim. */
   systemPrompt: string;
   /** Model to use; omit for Pi's configured default. */
-  model?: Model<any>;
+  model?: Model<Api>;
   /** Thinking effort; omit for Pi's default (settings, else medium, clamped to what the model supports). */
   thinkingLevel?: ThinkingLevel;
   /** Runtime the model came from (credentials lookup); omit to let Pi build its default. */
