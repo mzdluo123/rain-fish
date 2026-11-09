@@ -90,8 +90,8 @@ export const configSchema = z
     // --- images ---
     /** Largest image (bytes) fetched for the agent; bigger ones stay a `[图片]` placeholder. 0 = images are never fetched. Needs a vision model. */
     IMAGE_MAX_BYTES: z.coerce.number().int().nonnegative().default(3 * 1024 * 1024),
-    /** At most this many images (the newest) are attached to one wake-up; the rest stay placeholders. */
-    IMAGE_MAX_PER_RUN: z.coerce.number().int().nonnegative().default(4),
+    /** At most this many different images (the newest; repeats of pictures already in the context do not count) are attached to one wake-up; the rest stay placeholders. */
+    IMAGE_MAX_PER_RUN: z.coerce.number().int().nonnegative().default(8),
     /** Pictures of incoming messages are downloaded and kept (so the agent can look at and re-send them later) up to this many bytes in total; the least recently used go first. 0 = pictures are not kept. */
     IMAGE_STORE_MAX_BYTES: z.coerce.number().int().nonnegative().default(200 * 1024 * 1024),
     /** The model sees a scaled-down copy of every picture (same aspect ratio, never enlarged): at most this many pixels (tokens ~ pixels / 750). 0 = send pictures as they are. */

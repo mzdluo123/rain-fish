@@ -3,6 +3,7 @@ import type { ImageContent } from "@earendil-works/pi-ai";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { buildArchiveMessage, canReadImages, extendArchiveSource, serializeForArchive, type ArchiveBudget } from "./context/archive.js";
 import { estimateContextTokens, estimateMessageTokens, estimateMessagesTokens, estimateTextTokens } from "./context/estimate.js";
+import { imageKey } from "./context/image-key.js";
 import { imageBlockTokens } from "./context/image-size.js";
 import { MEMORY_FLUSH_PROMPT } from "./context/memory.js";
 import { linkNotice, linkNudgePrompt, SEND_NUDGE_PROMPT, SPEAK_NUDGE_PROMPT } from "./context/nudge.js";
@@ -84,6 +85,16 @@ export class PiConversation implements Conversation {
   /** Whether the session's model reads images; the responder only fetches pictures if so. */
   get acceptsImages(): boolean {
     return canReadImages(this.d.session.model);
+  }
+
+  /** Keys of the pictures in the live transcript (user turns and tool results), so a picture already there is not attached a second time. */
+  imagesInContext(): ReadonlySet<string> {
+    const keys = new Set<string>();
+    for (const m of this.d.session.agent.state.messages) {
+      if ((m.role !== "user" && m.role !== "toolResult") || !Array.isArray(m.content)) continue;
+      for (const b of m.content) if (b.type === "image") keys.add(imageKey(b));
+    }
+    return keys;
   }
 
   async ask(prompt: string, ctx: { run?: string; addressed?: boolean; mustSpeak?: boolean; images?: ImageContent[] } = {}): Promise<string> {

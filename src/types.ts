@@ -453,6 +453,8 @@ export interface Conversation {
   ask(prompt: string, ctx?: { run?: string; addressed?: boolean; mustSpeak?: boolean; images?: ImageContent[] }): Promise<string>;
   /** The model can read images; unset/false: the responder does not fetch any. */
   readonly acceptsImages?: boolean;
+  /** `imageKey`s of the pictures already in the live context (the responder does not attach those again). */
+  imagesInContext?(): ReadonlySet<string>;
   /** Archives the whole live context now (console `compact`); undefined = nothing to archive. Never called during a run. */
   compact?(): Promise<{ archived: number; tokensBefore: number; tokensAfter: number } | undefined>;
   /** Forgets the whole context including the archive (console `clear`); returns the live messages dropped. Never called during a run. */

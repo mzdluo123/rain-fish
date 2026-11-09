@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
+import { imageKey } from "../src/context/image-key.js";
 import { attachImages, formatBatch, formatPrompt, PiResponder, sampleExponential, type PiResponderOptions } from "../src/responder.js";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { Conversation, GroupMessage, ImageSource, PendingMessage, WakeConfig } from "../src/types.js";
@@ -134,6 +135,23 @@ describe("images in a batch", () => {
     expect(text).toContain('id="3" sender="Alice" user_id="42" images="2">');
     expect(text).not.toContain('id="1" sender="Alice" user_id="42" images');
     expect(text).toMatch(/<system>\n2 image\(s\) are attached/);
+  });
+
+  it("does not attach again a picture the conversation already holds", async () => {
+    const batch = [withImages("a", "1", ["u1"]), withImages("b", "2", ["u2"])];
+    const { images, numbers } = await attachImages(batch, source(4), undefined, undefined, new Set([imageKey(img("u1"))]));
+    expect(images.map((i) => i.data)).toEqual(["u2"]);
+    expect(numbers).toEqual([[], [1]]);
+  });
+
+  it("asks the conversation which pictures it already has before attaching", async () => {
+    const asked: { images?: ImageContent[] }[] = [];
+    const conv: Conversation = { acceptsImages: true, imagesInContext: () => new Set([imageKey(img("u1"))]), async ask(_p, ctx) { asked.push({ images: ctx?.images }); return ""; } };
+    const r = new PiResponder(async () => conv, opts(10, 10, { images: source(4) }));
+    r.notify({ ...msg("gx", "look"), images: [{ url: "u1" }] }, false);
+    jest.advanceTimersByTime(20);
+    await flush();
+    expect(asked[0]!.images).toEqual([]);
   });
 
   it("adds no image notice when nothing was attached", () => {

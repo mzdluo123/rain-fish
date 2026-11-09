@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { openDb } from "../src/db/open.js";
 import { ImageStore } from "../src/image-store.js";
 import { createPictureArchive } from "../src/picture-archive.js";
+import { imageKey } from "../src/context/image-key.js";
 import { attachImages, formatBatch, formatPrompt } from "../src/responder.js";
 import type { GroupMessage, ImageSource } from "../src/types.js";
 
@@ -59,6 +60,55 @@ describe("picture archive", () => {
     expect(text).toContain(`images="1,2"`);
     expect(text).toContain(`image_ids="i${ids[0]![0]},i${ids[0]![1]}"`);
     expect(formatPrompt(batch[0]!.msg)).not.toContain("image_ids");
+  });
+});
+
+describe("a picture enters the context once", () => {
+  const nm = (id: string, urls: string[]) => ({ msg: msg(id, urls), addressed: false });
+  const never: ImageSource = { maxPerRun: 4, load: async () => { throw new Error("must not download"); } };
+
+  it("does not attach again a picture whose bytes are already in the context; the message keeps its id and a notice names it", async () => {
+    const { archive } = setup();
+    const batch = [nm("1", ["https://x/1", "https://x/2"])];
+    const captured = await Promise.all(batch.map((p) => archive.capture(p.msg)));
+    const first = await attachImages(batch, never, captured, archive);
+    expect(first.images).toHaveLength(2);
+    const ids = captured.map((row) => row.map((x) => x!.id));
+
+    const inContext = new Set(first.images.map((i) => imageKey(i))); // what the conversation holds after that run
+    const again = await attachImages(batch, never, captured, archive, inContext);
+    expect(again.images).toHaveLength(0);
+    expect(again.repeated.sort()).toEqual(ids[0]!.slice().sort());
+    const text = formatBatch(batch, again.numbers, false, ids, again.repeated);
+    expect(text).toContain(`image_ids="i${ids[0]![0]},i${ids[0]![1]}"`);
+    expect(text).toContain(`i${ids[0]![0]}, i${ids[0]![1]} are already in your context`);
+    expect(text).not.toContain("image(s) are attached");
+  });
+
+  it("attaches only the new one of a mixed batch, and repeats do not use up the per-run slots", async () => {
+    const { archive } = setup();
+    const old = nm("1", ["https://x/1"]);
+    const oldPics = await archive.capture(old.msg);
+    const seen = await attachImages([old], never, [oldPics], archive);
+    const inContext = new Set(seen.images.map((i) => imageKey(i)));
+
+    const batch = [nm("2", ["https://x/2"]), nm("3", ["https://x/1"]), nm("4", ["https://x/3"])]; // newest: 3 (already seen), 4
+    const captured = await Promise.all(batch.map((p) => archive.capture(p.msg)));
+    const r = await attachImages(batch, { ...never, maxPerRun: 2 }, captured, archive, inContext);
+    expect(r.images).toHaveLength(2); // the repeat of x/1 did not take a slot: x/3 and x/2 both fit
+    expect(r.numbers[1]).toEqual([]);
+    expect(r.numbers[0]).toHaveLength(1);
+    expect(r.numbers[2]).toHaveLength(1);
+    expect(r.repeated).toEqual([oldPics[0]!.id]);
+  });
+
+  it("the same picture in two messages of a batch is attached once and numbered once", async () => {
+    const { archive } = setup();
+    const batch = [nm("1", ["https://x/1"]), nm("2", ["https://x/1"])];
+    const captured = await Promise.all(batch.map((p) => archive.capture(p.msg)));
+    const r = await attachImages(batch, never, captured, archive);
+    expect(r.images).toHaveLength(1);
+    expect(r.numbers).toEqual([[1], [1]]);
   });
 });
 
