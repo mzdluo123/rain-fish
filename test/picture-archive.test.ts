@@ -81,7 +81,7 @@ describe("a picture enters the context once", () => {
     expect(again.repeated.sort()).toEqual(ids[0]!.slice().sort());
     const text = formatBatch(batch, again.numbers, false, ids, again.repeated);
     expect(text).toContain(`image_ids="i${ids[0]![0]},i${ids[0]![1]}"`);
-    expect(text).toContain(`i${ids[0]![0]}, i${ids[0]![1]} are already in your context`);
+    expect(text).toContain(`图片 i${ids[0]![0]}、i${ids[0]![1]} 已在上文中`);
     expect(text).not.toContain("image(s) are attached");
   });
 
