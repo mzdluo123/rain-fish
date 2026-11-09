@@ -20,7 +20,7 @@ export function lastSeen(messages: readonly AgentMessage[], p: string): number |
       if (c.type !== "toolCall" || !SEEN_BY.has(c.name)) continue;
       const a = c.arguments as { path?: unknown; offset?: unknown; limit?: unknown };
       if (typeof a.path !== "string" || path.posix.resolve("/", a.path) !== target) continue;
-      if (c.name === "read" && (a.offset !== undefined || a.limit !== undefined)) continue;
+      if (c.name === "read" && (a.offset != null || a.limit != null)) continue; // models often send `null` for an omitted optional argument
       calls.set(c.id, c.name);
     }
   }

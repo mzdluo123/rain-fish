@@ -57,6 +57,12 @@ describe("edit and overwriting write need the file in the context window", () =>
     await expect(edit("/n.md")).rejects.toThrow(/have not read/);
   });
 
+  it("a whole-file read whose offset/limit arrive as null (how models send an omitted optional) counts", async () => {
+    markSeen(session, "/n.md", { args: { offset: null, limit: null } });
+    await edit("/n.md");
+    expect(env.fs.readText("/n.md")).toBe("omega beta");
+  });
+
   it("is refused after the context was cut (compaction, rollback, restart): the old read is gone with the messages", async () => {
     markSeen(session, "/n.md");
     session.agent.state.messages = []; // what compaction leaves of the old turns is only the archive text
