@@ -380,7 +380,7 @@ export type WakeConfig = Config["wake"];
 
 export type WeightRuleSpecial = "addressed" | "placeholder";
 
-/** One row of the wake-up heat table (`/wake-rules.md`, see `src/wake-rules.ts`). A row applies when any of its conditions holds (and the text is short enough). */
+/** One rule of the wake-up heat table (`/wake-rules.yaml`, see `src/wake-rules.ts`). A row applies when any of its conditions holds (and the text is short enough). */
 export interface WeightRule {
   name: string;
   /** Multiplies the message's excitation: below 1 = wake sooner, above 1 = wait longer. */

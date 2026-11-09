@@ -8,11 +8,11 @@ export const AGENT_MAX_FILE_BYTES = 10 * 1024;
 const PYTHON_FILE = /\.py$/i;
 
 /**
- * What the agent may write: Markdown notes and Python scripts (for `run_python`), each at most `AGENT_MAX_FILE_BYTES`. The error
+ * What the agent may write: Markdown notes, Python scripts (for `run_python`) and the wake rules file (`/wake-rules.yaml`), each at most `AGENT_MAX_FILE_BYTES`. The error
  * text is the agent's only instruction when it hits the size limit, so it spells out how to reorganise.
  */
 function assertAgentFileType(n: string): void {
-  if (!/\.md$/i.test(n) && !PYTHON_FILE.test(n)) {
+  if (!/\.md$/i.test(n) && !PYTHON_FILE.test(n) && n !== WAKE_RULES_PATH) {
     throw new Error(`EINVAL: only Markdown (.md) and Python (.py) files can be created or modified, and '${n}' is neither. Use a file name ending in .md (notes) or .py (scripts).`);
   }
 }
@@ -20,8 +20,11 @@ function assertAgentFileType(n: string): void {
 export function assertAgentWritable(p: string, content: string | Uint8Array): void {
   const n = VirtualFs.normalize(p);
   assertAgentFileType(n);
-  if (n === WAKE_RULES_PATH) validateWakeRulesWrite(content); // a table that does not parse is never written
+  if (n === WAKE_RULES_PATH) validateWakeRulesWrite(content); // rules that do not parse are never written
   const bytes = typeof content === "string" ? Buffer.byteLength(content, "utf-8") : content.byteLength;
+  if (bytes > AGENT_MAX_FILE_BYTES && n === WAKE_RULES_PATH) {
+    throw new Error(`EFBIG: '${n}' would be ${bytes} bytes, over the ${AGENT_MAX_FILE_BYTES}-byte (10 KB) limit. Nothing was written. Remove or merge rules.`);
+  }
   if (bytes > AGENT_MAX_FILE_BYTES && PYTHON_FILE.test(n)) {
     throw new Error(`EFBIG: '${n}' would be ${bytes} bytes, over the ${AGENT_MAX_FILE_BYTES}-byte (10 KB) limit for one file. Nothing was written. Make the script shorter: run_python uploads only this one file.`);
   }

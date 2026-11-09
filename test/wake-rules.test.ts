@@ -2,11 +2,10 @@ import { describe, expect, it } from "bun:test";
 import { openDb } from "../src/db/open.js";
 import { VirtualFs } from "../src/vfs.js";
 import { createVfsOperations } from "../src/vfs-ops.js";
-import { createWakeRules, DEFAULT_RULES, MAX_RULES, parseWakeRules, renderWakeRules, WAKE_RULES_PATH, weighMessage } from "../src/wake-rules.js";
+import { createWakeRules, DEFAULT_RULES, LEGACY_WAKE_RULES_PATH, MAX_RULES, parseWakeRules, renderWakeRules, WAKE_RULES_PATH, weighMessage } from "../src/wake-rules.js";
 import { recordingLogger } from "./helpers.js";
 
 const w = (text: string, addressed = false) => weighMessage(DEFAULT_RULES, text, addressed).weight;
-const HEAD = "| 名称 | 权重 | 包含 | 开头 | 结尾 | 最长字数 | 特殊 |\n|---|---|---|---|---|---|---|\n";
 
 describe("default keyword table", () => {
   it("ordinary text counts as 1", () => expect(w("今天吃什么")).toBe(1));
@@ -46,7 +45,7 @@ describe("default keyword table", () => {
   });
 });
 
-describe("the table file format", () => {
+describe("the YAML file format", () => {
   it("rendering the default rules and parsing them gives the same rules", () => {
     expect(parseWakeRules(renderWakeRules(DEFAULT_RULES))).toEqual(DEFAULT_RULES as never);
   });
@@ -55,37 +54,57 @@ describe("the table file format", () => {
     expect(Buffer.byteLength(renderWakeRules(DEFAULT_RULES))).toBeLessThan(10 * 1024);
   });
 
-  it("an empty table is valid (every message then weighs 1)", () => {
-    expect(parseWakeRules(HEAD)).toEqual([]);
+  it("an empty list is valid (every message then weighs 1)", () => {
+    expect(parseWakeRules("rules: []")).toEqual([]);
   });
 
-  it("explains itself with free text around the table", () => {
-    const rules = parseWakeRules(`# hi\nsome text\n\n${HEAD}| a | 2 | x y | | | 5 | |\n\nnotes after\n`);
-    expect(rules).toEqual([{ name: "a", weight: 2, contains: ["x", "y"], starts: [], ends: [], maxLen: 5 }]);
+  it("reads plain YAML: block lists, comments, lowercased words, optional fields", () => {
+    const rules = parseWakeRules(`# mine
+rules:
+  - name: a   # inline comment
+    weight: 2
+    contains:
+      - X
+      - y z
+    max_len: 5
+  - name: b
+    weight: 0.5
+    special: addressed
+`);
+    expect(rules).toEqual([
+      { name: "a", weight: 2, contains: ["x", "y z"], starts: [], ends: [], maxLen: 5 },
+      { name: "b", weight: 0.5, contains: [], starts: [], ends: [], special: "addressed" },
+    ]);
   });
 
+  const r = (body: string) => `rules:\n  - name: a\n    weight: 1\n${body}`;
   const bad: [string, string, RegExp][] = [
-    ["no table", "just text", /no table found/],
-    ["wrong header", "| a | b |\n|---|---|\n", /line 1: the header row must be exactly/],
-    ["missing separator", HEAD.split("\n")[0] + "\n| a | 1 | x | | | | |\n", /line 2: .*separator/],
-    ["wrong column count", HEAD + "| a | 1 | x |\n", /line 3: expected 7 columns, found 3/],
-    ["weight not a number", HEAD + "| a | heavy | x | | | | |\n", /line 3: 权重 "heavy"/],
-    ["weight too big", HEAD + "| a | 9 | x | | | | |\n", /权重 "9" must be a number from/],
-    ["weight too small", HEAD + "| a | 0 | x | | | | |\n", /权重/],
-    ["duplicate name", HEAD + "| a | 1 | x | | | | |\n| a | 1 | y | | | | |\n", /line 4: .*used twice/],
-    ["bad name", HEAD + "| a b | 1 | x | | | | |\n", /名称/],
-    ["no condition", HEAD + "| a | 1 | | | | 5 | |\n", /has no condition/],
-    ["bad special", HEAD + "| a | 1 | | | | | shout |\n", /特殊 "shout"/],
-    ["bad max length", HEAD + "| a | 1 | x | | | 0 | |\n", /最长字数/],
-    ["word too long", HEAD + `| a | 1 | ${"字".repeat(13)} | | | | |\n`, /longer than 12/],
-    ["too many words", HEAD + `| a | 1 | ${Array.from({ length: 31 }, (_, i) => `w${i}`).join(" ")} | | | | |\n`, /at most 30 words/],
-    ["two tables", `${HEAD}| a | 1 | x | | | | |\n\ntext\n\n${HEAD}`, /a second table/],
-    ["too many rules", HEAD + Array.from({ length: MAX_RULES + 1 }, (_, i) => `| r${i} | 1 | x | | | | |\n`).join(""), new RegExp(`at most ${MAX_RULES} rules`)],
+    ["not YAML", "rules: [", /not valid YAML/],
+    ["empty file", "", /rules/],
+    ["not a mapping", "- name: a", /rules/],
+    ["no rules key", "other: 1", /rules/],
+    ["unknown top-level key", "rules: []\nextra: 1", /extra|Unrecognized/],
+    ["unknown field in a rule", r("    contains: [x]\n    colour: red\n"), /rules\[1\].*colour|Unrecognized/],
+    ["weight not a number", r("    contains: [x]\n").replace("weight: 1", "weight: heavy"), /rules\[1\]\.weight/],
+    ["weight too big", r("    contains: [x]\n").replace("weight: 1", "weight: 9"), /weight: must be at most 5/],
+    ["weight too small", r("    contains: [x]\n").replace("weight: 1", "weight: 0"), /weight: must be at least 0.1/],
+    ["duplicate name", `${r("    contains: [x]\n")}  - name: a\n    weight: 1\n    contains: [y]\n`, /"a" is used twice/],
+    ["bad name", r("    contains: [x]\n").replace("name: a", "name: a b"), /rules\[1\]\.name/],
+    ["numeric name", r("    contains: [x]\n").replace("name: a", "name: 123"), /rules\[1\]\.name/],
+    ["no condition", r("    max_len: 5\n"), /has no condition/],
+    ["bad special", r("    special: shout\n"), /special: must be addressed or placeholder/],
+    ["bad max length", r("    contains: [x]\n    max_len: 0\n"), /max_len/],
+    ["fractional max length", r("    contains: [x]\n    max_len: 2.5\n"), /max_len/],
+    ["word too long", r(`    contains: ["${"字".repeat(13)}"]\n`), /1-12 characters/],
+    ["word that is not a string", r("    contains: [~]\n"), /contains/],
+    ["too many words", r(`    contains: [${Array.from({ length: 31 }, (_, i) => `w${i}`).join(", ")}]\n`), /at most 30 words/],
+    ["too many rules", `rules:\n${Array.from({ length: MAX_RULES + 1 }, (_, i) => `  - {name: r${i}, weight: 1, contains: [x]}\n`).join("")}`, new RegExp(`at most ${MAX_RULES} rules`)],
+    ["alias bomb", "rules: []\n" + ["a: &a [x,x,x,x,x,x,x,x,x]", ...Array.from("bcdefghi", (k, i) => `${k}: &${k} [${Array(9).fill(`*${"abcdefgh"[i]}`).join(",")}]`)].join("\n"), /./],
   ];
   for (const [name, text, re] of bad) it(`rejects: ${name}`, () => expect(() => parseWakeRules(text)).toThrow(re));
 });
 
-describe("/wake-rules.md in the agent's filesystem", () => {
+describe("/wake-rules.yaml in the agent's filesystem", () => {
   const setup = () => {
     const fs = new VirtualFs(openDb(":memory:"));
     const log = recordingLogger();
@@ -103,44 +122,61 @@ describe("/wake-rules.md in the agent's filesystem", () => {
 
   it("keeps a file that already exists", () => {
     const fs = new VirtualFs(openDb(":memory:"));
-    fs.writeFile(WAKE_RULES_PATH, `${HEAD}| mine | 4 | 哈哈 | | | | |\n`);
+    fs.writeFile(WAKE_RULES_PATH, "rules:\n  - {name: mine, weight: 4, contains: [哈哈]}\n");
     const live = createWakeRules({ fs });
     expect(fs.readText(WAKE_RULES_PATH)).toContain("mine");
     expect(live.weigh("哈哈", false).weight).toBe(4);
     expect(live.weigh("有人吗？", false).weight).toBe(1); // the defaults are not mixed in
   });
 
+  it("replaces the old Markdown table: the YAML file is seeded and the .md file is removed, with a warning", () => {
+    const fs = new VirtualFs(openDb(":memory:"));
+    fs.writeFile(LEGACY_WAKE_RULES_PATH, "| 名称 | ... |");
+    const log = recordingLogger();
+    createWakeRules({ fs, logger: log.logger });
+    expect(fs.exists(WAKE_RULES_PATH)).toBe(true);
+    expect(fs.exists(LEGACY_WAKE_RULES_PATH)).toBe(false);
+    expect(log.entries.some((e) => e.level === "warn" && e.msg.includes(LEGACY_WAKE_RULES_PATH))).toBe(true);
+  });
+
   it("an edit by the agent takes effect on the next message (reload)", async () => {
     const { ops, live, log } = setup();
     expect(live.weigh("哈哈哈哈", false).weight).toBe(0.8);
     const text = (await ops.edit.readFile(WAKE_RULES_PATH)).toString();
-    await ops.edit.writeFile(WAKE_RULES_PATH, text.replace("| closing | 0.8 |", "| closing | 0.4 |"));
+    await ops.edit.writeFile(WAKE_RULES_PATH, text.replace("weight: 0.8", "weight: 0.4"));
     expect(live.weigh("哈哈哈哈", false).weight).toBe(0.4);
     expect(log.entries.some((e) => e.level === "info" && /reloaded \d+ wake rule/.test(e.msg))).toBe(true);
   });
 
-  it("an edit that breaks the table fails and leaves the file as it was", async () => {
+  it("an edit that breaks the file fails and leaves it as it was", async () => {
     const { fs, ops, live } = setup();
     const before = fs.readText(WAKE_RULES_PATH);
-    await expect(ops.edit.writeFile(WAKE_RULES_PATH, before.replace("| closing | 0.8 |", "| closing | lots |"))).rejects.toThrow(/was not changed.*line \d+: 权重 "lots"/);
-    await expect(ops.write.writeFile(WAKE_RULES_PATH, "I deleted the table")).rejects.toThrow(/no table found/);
+    await expect(ops.edit.writeFile(WAKE_RULES_PATH, before.replace("weight: 0.8", "weight: lots"))).rejects.toThrow(/was not changed.*weight/);
+    await expect(ops.write.writeFile(WAKE_RULES_PATH, "I deleted everything")).rejects.toThrow(/was not changed/);
     expect(fs.readText(WAKE_RULES_PATH)).toBe(before);
     expect(live.weigh("哈哈哈哈", false).weight).toBe(0.8);
   });
 
-  it("other files are not validated as rules", async () => {
+  it("is the only non-Markdown, non-Python file the agent may write; the size limit applies", async () => {
     const { ops } = setup();
-    await ops.write.writeFile("/notes/rules.md", "| not | a | table");
+    await expect(ops.write.writeFile("/other.yaml", "rules: []")).rejects.toThrow(/only Markdown/);
+    await expect(ops.write.writeFile("/wake-rules.yml", "rules: []")).rejects.toThrow(/only Markdown/);
+    await expect(ops.write.writeFile(WAKE_RULES_PATH, "rules: []\n#" + "x".repeat(11_000))).rejects.toThrow(/EFBIG.*Remove or merge rules/);
   });
 
-  it("a file broken from outside (host tool) keeps the last good table in force and warns once", () => {
+  it("other files are not validated as rules", async () => {
+    const { ops } = setup();
+    await ops.write.writeFile("/notes/rules.md", "rules: [");
+  });
+
+  it("a file broken from outside (host tool) keeps the last good rules in force and warns once", () => {
     const { fs, live, log } = setup();
     expect(live.weigh("哈哈哈哈", false).weight).toBe(0.8);
-    fs.writeFile(WAKE_RULES_PATH, "garbage");
+    fs.writeFile(WAKE_RULES_PATH, "garbage: [");
     expect(live.weigh("哈哈哈哈", false).weight).toBe(0.8);
     live.weigh("哈哈哈哈", false);
     expect(log.entries.filter((e) => e.level === "warn" && /invalid, keeping the previous rules/.test(e.msg))).toHaveLength(1);
-    fs.writeFile(WAKE_RULES_PATH, `${HEAD}| x | 3 | 哈哈 | | | | |\n`); // fixed later: picked up again
+    fs.writeFile(WAKE_RULES_PATH, "rules:\n  - {name: x, weight: 3, contains: [哈哈]}\n"); // fixed later: picked up again
     expect(live.weigh("哈哈哈哈", false).weight).toBe(3);
   });
 });

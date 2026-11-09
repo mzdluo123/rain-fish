@@ -1,32 +1,34 @@
 /**
- * The keyword/heat table of the wake-up scheduler, kept in the agent's own virtual filesystem as `/wake-rules.md` so the
- * agent can tune how quickly it reacts. The file is a Markdown table (the agent may only write `.md`):
+ * The keyword/heat table of the wake-up scheduler, kept in the agent's own virtual filesystem as `/wake-rules.yaml` so the
+ * agent can tune how quickly it reacts. The file is YAML (Bun's built-in parser, a zod schema for the shape); it is the one
+ * non-Markdown, non-Python file the agent may write (see `assertAgentFileType`).
  *
  *   - If it does not exist it is created from `DEFAULT_RULES` (`createWakeRules`, also if it disappears later).
  *   - Every message re-reads it; a changed text is parsed and takes effect at once (reload), whoever wrote it.
- *   - The agent's write/edit of this path is validated first (`assertAgentWritable` -> `parseWakeRules`): a table that does
+ *   - The agent's write/edit of this path is validated first (`assertAgentWritable` -> `parseWakeRules`): a file that does
  *     not parse is refused with the reason and nothing is written, so the file on disk is always valid. If it was broken
  *     from outside anyway (host `bun run fs`), the last good table stays in force and a warning is logged.
  *
  * It is agent-writable, so group members can influence it. What it can do is bounded: plain substring tests only (no
- * regex), at most `MAX_RULES` rows, weights in [`MIN_RULE_WEIGHT`, `MAX_RULE_WEIGHT`], a product clamped to [`MIN_WEIGHT`, `MAX_WEIGHT`],
+ * regex), at most `MAX_RULES` rules, weights in [`MIN_RULE_WEIGHT`, `MAX_RULE_WEIGHT`], a product clamped to [`MIN_WEIGHT`, `MAX_WEIGHT`],
  * and the wake-up always stays under `WAKE_MAX_WAIT_SECONDS` / `WAKE_ADDRESSED_MAX_WAIT_SECONDS` / `WAKE_MAX_BATCH`.
  */
-import type { Logger, WeighFn, WeightRule, WeightRuleSpecial } from "./types.js";
+import { z } from "zod";
+import type { Logger, WeighFn, WeightRule } from "./types.js";
 import { noopLogger } from "./logger.js";
 import type { VirtualFs } from "./vfs.js";
 
-export const WAKE_RULES_PATH = "/wake-rules.md";
+export const WAKE_RULES_PATH = "/wake-rules.yaml";
+/** The Markdown table of earlier versions; replaced (deleted) when the YAML file is first created. */
+export const LEGACY_WAKE_RULES_PATH = "/wake-rules.md";
 export const MAX_RULES = 40;
 export const MAX_WORDS_PER_CELL = 30;
 export const MAX_WORD_CHARS = 12;
 export const MIN_RULE_WEIGHT = 0.1;
 export const MAX_RULE_WEIGHT = 5;
-/** Final clamp of a message's weight (the product of all rows that apply). */
+/** Final clamp of a message's weight (the product of all rules that apply). */
 export const MIN_WEIGHT = 0.2;
 export const MAX_WEIGHT = 4;
-
-export const COLUMNS = ["名称", "权重", "包含", "开头", "结尾", "最长字数", "特殊"] as const;
 
 export const DEFAULT_RULES: readonly WeightRule[] = [
   // waiting for an answer: come sooner
@@ -43,95 +45,77 @@ export const DEFAULT_RULES: readonly WeightRule[] = [
   { name: "keep_quiet", weight: 3, contains: ["别说话", "闭嘴"], starts: [], ends: [] },
 ];
 
-const INTRO = `# 唤醒热度规则
-
-这张表决定群里每条消息让你"多快被叫醒"。你被唤醒的时机取决于群里的"热度"：每条消息都会加热，热度会随时间冷却，等冷到阈值以下你才被叫醒。表里每一行是一类消息，\`权重\` 就是这类消息的加热倍数：
-
-- **小于 1**：更快叫醒你（有人在等你回答，或话题已经结束）。
-- **大于 1**：多等一会儿再叫醒你（话还没说完，或正在争吵，别急着插嘴）。
-- 一条消息命中几行，权重就相乘，最后限制在 ${MIN_WEIGHT} 到 ${MAX_WEIGHT} 之间。没命中任何一行的消息权重是 1。
-
-## 怎么改
-用 \`edit\` 改动或增删表里的行，一次改一处最稳妥。表格格式不对时（列数不对、权重不是 ${MIN_RULE_WEIGHT}~${MAX_RULE_WEIGHT} 之间的数字、名称重复、一行里没有任何条件……）修改会失败，原文件保持不变，错误信息会告诉你是哪一行。最多 ${MAX_RULES} 行。
-
-## 每列的意思
-- \`名称\`：随便取，不能重复，只能用字母、数字、下划线、连字符或汉字。
-- \`权重\`：${MIN_RULE_WEIGHT}~${MAX_RULE_WEIGHT}。
-- \`包含\` / \`开头\` / \`结尾\`：词用空格隔开（词里不能有空格，每个最多 ${MAX_WORD_CHARS} 个字符，不分大小写）；消息含有其中任何一个，就算命中。三列都空时留空即可。
-- \`最长字数\`：可选。填了的话，消息超过这么多字就不算命中（用来限制"收尾"这类短句）。
-- \`特殊\`：可选。\`addressed\` = 有人 @ 你或回复你；\`placeholder\` = 整条消息只有 \`[图片]\` \`[表情]\` 这样的占位。
-- 同一行里，条件之间是"或"：任何一个满足就命中（再受最长字数限制）。至少要有一个条件。
-
+const HEADER = `# Wake-up heat rules. Every message heats the chat by a weight; you are woken once the heat has cooled down.
+#   weight < 1: wake sooner (someone waits for an answer, the topic is closed)
+#   weight > 1: wait longer (the sentence is unfinished, an argument is going on)
+# A message that matches several rules gets the product of their weights, clamped to ${MIN_WEIGHT}-${MAX_WEIGHT}. No match = 1.
+# Change rules with \`edit\`. An invalid file is refused with the reason and stays as it was. At most ${MAX_RULES} rules.
+#
+# Fields of a rule:
+#   name      unique; 1-24 letters, digits, "_", "-" or Chinese characters
+#   weight    ${MIN_RULE_WEIGHT}-${MAX_RULE_WEIGHT}
+#   contains / starts / ends
+#             lists of words (case-insensitive, up to ${MAX_WORDS_PER_CELL} words of up to ${MAX_WORD_CHARS} characters); the rule matches when the
+#             message contains / starts with / ends with any of them
+#   max_len   optional; a longer message never matches (keeps "closing" rules to short lines)
+#   special   optional; addressed = someone @-mentions or replies to you; placeholder = the message is only a placeholder like [图片]
+# The conditions of one rule are alternatives (any one matches); give at least one.
 `;
 
 /** The file's text for a set of rules (what is seeded; `parseWakeRules(renderWakeRules(r))` gives `r` back). */
 export function renderWakeRules(rules: readonly WeightRule[]): string {
-  const cell = (xs: readonly string[]) => xs.join(" ");
-  const rows = rules.map((r) => `| ${r.name} | ${r.weight} | ${cell(r.contains)} | ${cell(r.starts)} | ${cell(r.ends)} | ${r.maxLen ?? ""} | ${r.special ?? ""} |`);
-  return `${INTRO}| ${COLUMNS.join(" | ")} |\n|${COLUMNS.map(() => "---").join("|")}|\n${rows.join("\n")}\n`;
+  const list = (key: string, xs: readonly string[]) => (xs.length ? [`  ${key}: [${xs.map((x) => JSON.stringify(x)).join(", ")}]`] : []);
+  const entries = rules.map((r) =>
+    [`- name: ${r.name}`, `  weight: ${r.weight}`, ...list("contains", r.contains), ...list("starts", r.starts), ...list("ends", r.ends), ...(r.maxLen !== undefined ? [`  max_len: ${r.maxLen}`] : []), ...(r.special ? [`  special: ${r.special}`] : [])].join("\n"),
+  );
+  return `${HEADER}\nrules:\n${entries.join("\n").replace(/^/gm, "  ")}\n`;
 }
 
 export class WakeRulesError extends Error {}
 
-/** Parses the table of the file. Throws `WakeRulesError` naming the line when anything is off; text outside the table is ignored. */
+const words = z
+  .array(z.string().refine((w) => w.length > 0 && [...w].length <= MAX_WORD_CHARS, `each word must be 1-${MAX_WORD_CHARS} characters`))
+  .max(MAX_WORDS_PER_CELL, `at most ${MAX_WORDS_PER_CELL} words`)
+  .optional();
+
+const ruleSchema = z
+  .strictObject({
+    name: z.string().regex(/^[A-Za-z0-9_\-一-鿿]{1,24}$/, 'must be 1-24 letters, digits, "_", "-" or Chinese characters (quote it if it looks like a number)'),
+    weight: z.number(`must be a number from ${MIN_RULE_WEIGHT} to ${MAX_RULE_WEIGHT}`).min(MIN_RULE_WEIGHT, `must be at least ${MIN_RULE_WEIGHT}`).max(MAX_RULE_WEIGHT, `must be at most ${MAX_RULE_WEIGHT}`),
+    contains: words,
+    starts: words,
+    ends: words,
+    max_len: z.number().int("must be a whole number").min(1).max(500, "must be from 1 to 500").optional(),
+    special: z.enum(["addressed", "placeholder"], "must be addressed or placeholder").optional(),
+  })
+  .refine((r) => r.contains?.length || r.starts?.length || r.ends?.length || r.special, "has no condition (fill contains, starts, ends or special)");
+
+const fileSchema = z.strictObject({ rules: z.array(ruleSchema).max(MAX_RULES, `at most ${MAX_RULES} rules`) });
+
+/** Parses the file. Throws `WakeRulesError` naming the rule and field when anything is off. */
 export function parseWakeRules(text: string): WeightRule[] {
-  const lines = text.split(/\r?\n/);
-  const rules: WeightRule[] = [];
+  let doc: unknown;
+  try {
+    doc = Bun.YAML.parse(text);
+  } catch (err) {
+    throw new WakeRulesError(`not valid YAML: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (typeof doc !== "object" || doc === null || Array.isArray(doc)) throw new WakeRulesError("the file must be a mapping with a `rules` list");
+  const r = fileSchema.safeParse(doc);
+  if (!r.success) {
+    const where = (path: PropertyKey[]) => path.map((k, i) => (typeof k === "number" ? `[${k + 1}]` : i ? `.${String(k)}` : String(k))).join("");
+    throw new WakeRulesError(r.error.issues.slice(0, 3).map((i) => `${where(i.path) || "file"}: ${i.message}`).join("; "));
+  }
   const names = new Set<string>();
-  let state: "before" | "separator" | "rows" = "before";
-  let sawTable = false;
-  const fail = (n: number, msg: string): never => {
-    throw new WakeRulesError(`line ${n}: ${msg}`);
-  };
-  const cells = (line: string) => line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
-  const words = (n: number, col: string, cell: string) => {
-    const ws = cell.split(/\s+/).filter(Boolean).map((w) => w.toLowerCase());
-    if (ws.length > MAX_WORDS_PER_CELL) fail(n, `column ${col}: at most ${MAX_WORDS_PER_CELL} words`);
-    for (const w of ws) if ([...w].length > MAX_WORD_CHARS) fail(n, `column ${col}: the word "${w}" is longer than ${MAX_WORD_CHARS} characters`);
-    return ws;
-  };
-  lines.forEach((raw, i) => {
-    const n = i + 1;
-    if (!raw.trim().startsWith("|")) {
-      if (state === "rows" && raw.trim()) state = "before"; // the table ended; a second table would be rejected below
-      return;
-    }
-    if (state === "before") {
-      if (sawTable) fail(n, "a second table; keep all rules in one table");
-      sawTable = true;
-      const head = cells(raw);
-      if (head.length !== COLUMNS.length || head.some((h, k) => h !== COLUMNS[k])) fail(n, `the header row must be exactly: | ${COLUMNS.join(" | ")} |`);
-      state = "separator";
-      return;
-    }
-    if (state === "separator") {
-      if (!/^\|[\s:|-]+\|?$/.test(raw.trim())) fail(n, "the line under the header must be the separator row: |---|---|...|");
-      state = "rows";
-      return;
-    }
-    const c = cells(raw);
-    if (c.length !== COLUMNS.length) fail(n, `expected ${COLUMNS.length} columns, found ${c.length} (a "|" inside a cell?)`);
-    const [name = "", weightCell = "", contains = "", starts = "", ends = "", maxCell = "", specialCell = ""] = c;
-    if (!/^[A-Za-z0-9_\-一-鿿]{1,24}$/.test(name)) fail(n, `名称 "${name}" must be 1-24 letters, digits, "_", "-" or Chinese characters`);
-    if (names.has(name)) fail(n, `名称 "${name}" is used twice`);
-    const weight = Number(weightCell);
-    if (!weightCell || !Number.isFinite(weight) || weight < MIN_RULE_WEIGHT || weight > MAX_RULE_WEIGHT) fail(n, `权重 "${weightCell}" must be a number from ${MIN_RULE_WEIGHT} to ${MAX_RULE_WEIGHT}`);
-    let maxLen: number | undefined;
-    if (maxCell) {
-      maxLen = Number(maxCell);
-      if (!Number.isInteger(maxLen) || maxLen < 1 || maxLen > 500) fail(n, `最长字数 "${maxCell}" must be a whole number from 1 to 500, or empty`);
-    }
-    if (specialCell && specialCell !== "addressed" && specialCell !== "placeholder") fail(n, `特殊 "${specialCell}" must be empty, addressed or placeholder`);
-    const rule: WeightRule = { name, weight, contains: words(n, "包含", contains), starts: words(n, "开头", starts), ends: words(n, "结尾", ends) };
-    if (maxLen !== undefined) rule.maxLen = maxLen;
-    if (specialCell) rule.special = specialCell as WeightRuleSpecial;
-    if (!rule.contains.length && !rule.starts.length && !rule.ends.length && !rule.special) fail(n, `row "${name}" has no condition (fill 包含, 开头, 结尾 or 特殊)`);
-    if (rules.length >= MAX_RULES) fail(n, `at most ${MAX_RULES} rules`);
-    names.add(name);
-    rules.push(rule);
+  return r.data.rules.map((x) => {
+    if (names.has(x.name)) throw new WakeRulesError(`rules: the name "${x.name}" is used twice`);
+    names.add(x.name);
+    const lower = (xs?: string[]) => (xs ?? []).map((w) => w.toLowerCase());
+    const rule: WeightRule = { name: x.name, weight: x.weight, contains: lower(x.contains), starts: lower(x.starts), ends: lower(x.ends) };
+    if (x.max_len !== undefined) rule.maxLen = x.max_len;
+    if (x.special) rule.special = x.special;
+    return rule;
   });
-  if (!sawTable) throw new WakeRulesError("no table found: keep the table with the header | " + COLUMNS.join(" | ") + " |");
-  return rules;
 }
 
 /** The text is only a placeholder like "[图片]" / "[表情]": nothing a member wrote. */
@@ -165,7 +149,7 @@ export function validateWakeRulesWrite(content: string | Uint8Array): void {
     parseWakeRules(text);
   } catch (err) {
     if (!(err instanceof WakeRulesError)) throw err;
-    throw new Error(`EINVAL: '${WAKE_RULES_PATH}' was not changed, the table is invalid: ${err.message}. Fix it and write again; the file keeps its previous content.`);
+    throw new Error(`EINVAL: '${WAKE_RULES_PATH}' was not changed, the rules are invalid: ${err.message}. Fix it and write again; the file keeps its previous content.`);
   }
 }
 
@@ -184,6 +168,10 @@ export function createWakeRules(opts: { fs: VirtualFs; logger?: Logger }): { wei
       if (!opts.fs.exists(WAKE_RULES_PATH)) {
         opts.fs.writeFile(WAKE_RULES_PATH, renderWakeRules(DEFAULT_RULES));
         log.info(`created ${WAKE_RULES_PATH} with the default rules`);
+        if (opts.fs.exists(LEGACY_WAKE_RULES_PATH)) {
+          opts.fs.remove(LEGACY_WAKE_RULES_PATH); // the Markdown table is no longer read; keeping it would only mislead
+          log.warn(`removed the old ${LEGACY_WAKE_RULES_PATH}: wake rules now live in ${WAKE_RULES_PATH} (reset to the defaults)`);
+        }
       }
       const text = opts.fs.readText(WAKE_RULES_PATH);
       if (text === loadedText || text === badText) return;
