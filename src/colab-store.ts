@@ -28,4 +28,17 @@ export class ColabStore {
   clear(): void {
     this.db.run("DELETE FROM colab_runtime");
   }
+
+  /** Start times of the runs after `since`, oldest first (the hourly cap, `colab_exec`). */
+  execsSince(since: number): number[] {
+    return (this.db.query("SELECT ts FROM colab_exec WHERE ts > ? ORDER BY ts").all(since) as { ts: number }[]).map((r) => r.ts);
+  }
+
+  /** Records a run started at `at` and drops the ones at or before `pruneBefore`. */
+  recordExec(at: number, pruneBefore: number): void {
+    this.db.transaction(() => {
+      this.db.query("DELETE FROM colab_exec WHERE ts <= ?").run(pruneBefore);
+      this.db.query("INSERT INTO colab_exec (ts) VALUES (?)").run(at);
+    })();
+  }
 }

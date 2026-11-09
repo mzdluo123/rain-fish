@@ -1,6 +1,9 @@
 import { z } from "zod";
 import type { Config } from "./types.js";
 
+/** The most output (per stream) one Python run may return (`run_python`, `COLAB_OUTPUT_MAX_BYTES`): all of it enters the context. */
+export const PYTHON_OUTPUT_MAX_BYTES = 64 * 1024;
+
 /** `true`/`false`/`1`/`0` (case-insensitive) -> boolean. */
 const flag = (def: boolean) =>
   z
@@ -123,7 +126,7 @@ export const configSchema = z
     /** `colab new` may take this long. */
     COLAB_CREATE_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(180),
     /** Per stream (stdout, stderr): at most this many bytes are returned (head + tail, the middle is cut). */
-    COLAB_OUTPUT_MAX_BYTES: z.coerce.number().int().positive().default(8000),
+    COLAB_OUTPUT_MAX_BYTES: z.coerce.number().int().positive().max(PYTHON_OUTPUT_MAX_BYTES).default(8000),
     /** Runs per agent run. */
     COLAB_EXEC_MAX_PER_RUN: z.coerce.number().int().positive().default(3),
     /** Runs per hour, all groups together. */

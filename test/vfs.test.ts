@@ -143,3 +143,21 @@ describe("persistence", () => {
     expect(new VirtualFs(openDb(file)).readText("/persona.md")).toBe("- likes rain");
   });
 });
+
+describe("path limits", () => {
+  it("refuses over-long and over-deep paths with EINVAL and stores no parent rows", () => {
+    expect(code(() => fs.writeFile(`/${"a/".repeat(5000)}x.md`, "x"))).toBe("EINVAL");
+    expect(code(() => fs.writeFile(`/${"a/".repeat(40)}x.md`, "x"))).toBe("EINVAL");
+    expect(code(() => fs.writeFile(`/${"b".repeat(1100)}.md`, "x"))).toBe("EINVAL");
+    expect(code(() => fs.mkdir(`/${"a/".repeat(40)}`))).toBe("EINVAL");
+    expect(fs.stat("/a")).toBeUndefined();
+    expect(code(() => fs.writeFile(`/${"a/".repeat(30)}x.md`, "x"))).toBe("no error");
+  });
+
+  it("glob treats limit 0 or negative as 1", () => {
+    fs.writeFile("/g/a.md", "x");
+    fs.writeFile("/g/b.md", "x");
+    expect(fs.glob("**/*.md", "/g", { limit: 0 })).toHaveLength(1);
+    expect(fs.glob("**/*.md", "/g", { limit: -3 })).toHaveLength(1);
+  });
+});

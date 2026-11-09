@@ -139,6 +139,15 @@ describe("/wake-rules.yaml in the agent's filesystem", () => {
     expect(log.entries.some((e) => e.level === "warn" && e.msg.includes(LEGACY_WAKE_RULES_PATH))).toBe(true);
   });
 
+  it("migrating from the legacy table rewrites the /persona.md link to the YAML file", () => {
+    const fs = new VirtualFs(openDb(":memory:"));
+    fs.writeFile(LEGACY_WAKE_RULES_PATH, "| 名称 | ... |");
+    fs.writeFile("/persona.md", "- [唤醒规则](/wake-rules.md)：调整唤醒权重\n");
+    createWakeRules({ fs });
+    expect(fs.exists(LEGACY_WAKE_RULES_PATH)).toBe(false);
+    expect(fs.readText("/persona.md")).toBe("- [唤醒规则](/wake-rules.yaml)：调整唤醒权重\n");
+  });
+
   it("an edit by the agent takes effect on the next message (reload)", async () => {
     const { ops, live, log } = setup();
     expect(live.weigh("哈哈哈哈", false).weight).toBe(0.8);

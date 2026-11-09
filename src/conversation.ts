@@ -97,10 +97,30 @@ export class PiConversation implements Conversation {
     return keys;
   }
 
-  async ask(prompt: string, ctx: { run?: string; addressed?: boolean; mustSpeak?: boolean; images?: ImageContent[] } = {}): Promise<string> {
+  /**
+   * Start-of-run housekeeping, sized for the upcoming turn (`estimate`: its text + pictures): cache-expiry compaction
+   * (or clear), the memory flush and threshold compaction. Each can drop live pictures, so the responder calls this
+   * first and only then asks `imagesInContext` which pictures need no second copy; `ask(..., { prepared: true })` follows.
+   */
+  async prepare(estimate: { prompt: string; images?: readonly ImageContent[] }, ctx: { run?: string } = {}): Promise<void> {
     this.cur = { run: ctx.run };
+    try {
+      await this.beginRun(estimate.prompt, this.acceptsImages ? estimate.images : undefined);
+    } finally {
+      this.cur = {};
+    }
+  }
+
+  private async beginRun(prompt: string, images?: readonly ImageContent[]): Promise<void> {
     this.resetBudgets();
-    this.refreshPersona();
+    this.refreshPersona(); // once per run: the pin stays stable for the rest of it
+    await this.compactIfCacheExpired(prompt, imageTokens(images));
+    await this.flushMemoryIfNeeded(prompt, imageTokens(images));
+    await this.compactIfNeeded(prompt, imageTokens(images));
+  }
+
+  async ask(prompt: string, ctx: { run?: string; addressed?: boolean; mustSpeak?: boolean; images?: ImageContent[]; prepared?: boolean } = {}): Promise<string> {
+    this.cur = { run: ctx.run };
     const images = this.acceptsImages ? ctx.images : undefined; // a text-only model would reject the request
     try {
       const unlinked = this.unlinkedNotes();
@@ -108,9 +128,8 @@ export class PiConversation implements Conversation {
         prompt = `${prompt}\n\n${linkNotice(unlinked)}`; // appended at the very end of the user turn: the cached prefix is untouched
         this.emit("links.unlinked", { count: unlinked.length, when: "run start" });
       }
-      await this.compactIfCacheExpired(prompt, imageTokens(images));
-      await this.flushMemoryIfNeeded(prompt, imageTokens(images));
-      await this.compactIfNeeded(prompt, imageTokens(images));
+      if (!ctx.prepared) await this.beginRun(prompt, images);
+      this.resetBudgets(); // again: a flush turn in the housekeeping may have used them
       const first = await this.runTurn(prompt, "message", images);
       if (first.wrote) await this.linkReminder();
       if ((!ctx.addressed && !ctx.mustSpeak) || first.sent) return first.text;
@@ -340,7 +359,7 @@ export class PiConversation implements Conversation {
     this.archiveSource = "";
     this.archived = false;
     this.flushed = false;
-    this.cur = {};
+    if (why === "manual") this.cur = {}; // the console command is outside any run; the cache-expiry fallback runs inside one and keeps its `run` key
     this.log.success(`group ${this.d.groupId}: cleared the context (${dropped} message(s), ~${tokens} tokens)`);
     this.emit("conv.state", { from: "any", to: "fresh", reason: why === "manual" ? "manual clear" : "clear after cache expiry", dropped_messages: dropped, tokens_before: tokens });
     return dropped;

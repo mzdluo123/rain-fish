@@ -4,6 +4,7 @@ import type { ImageContent } from "@earendil-works/pi-ai";
 import { imageKey } from "../src/context/image-key.js";
 import { isArchiveMessage } from "../src/context/archive.js";
 import { PiConversation } from "../src/conversation.js";
+import { PiResponder } from "../src/responder.js";
 import { ConversationStore } from "../src/conversation-store.js";
 import { openDb } from "../src/db/open.js";
 import { MessageStore } from "../src/store.js";
@@ -657,5 +658,67 @@ describe("compaction after the prompt cache expired", () => {
     const fresh = await setup({ script: bigScript, cacheCompact: cc, now: () => Number.MAX_SAFE_INTEGER });
     await fresh.conv.ask("第一次");
     expect(fresh.store.load("g1").archive).toBeUndefined();
+  });
+});
+
+describe("start-of-run housekeeping before the picture check", () => {
+  const cc: CacheCompactConfig = { enabled: true, ttlMs: 3_600_000, minSavedTokens: 1000, minSavedRatio: 0.3, clearFallback: false };
+  const image = (tag: string): ImageContent => ({ type: "image", data: tag, mimeType: "image/png" });
+  const lastRequestEnd = (s: { state: { messages: AgentMessage[] } }) => s.state.messages.findLast((m) => m.role === "assistant")!.timestamp;
+  /** ~4 turns of history (the first one with picture AAA), below the normal compaction threshold; `at` moves the clock past the last request. */
+  async function withPicture(over: Parameters<typeof setup>[0] = {}) {
+    let now = 0;
+    const t = await setup({ script: (_p, n) => [assistantText(`第${n}轮 ` + tokensOf(1500))], context: { compactTokens: 50_000 }, cacheCompact: cc, now: () => now, ...over });
+    await t.conv.ask("看图", { images: [image("AAA")] });
+    for (let i = 0; i < 3; i++) await t.conv.ask(`问题${i}`);
+    const at = (ms: number) => { now = lastRequestEnd(t.session) + ms; };
+    return { ...t, at };
+  }
+
+  it("prepare runs the cache-expiry compaction, so the pictures it archived are no longer listed; a prepared ask does not compact again", async () => {
+    const t = await withPicture();
+    t.at(cc.ttlMs + 1);
+    expect(t.conv.imagesInContext().has(imageKey(image("AAA")))).toBe(true);
+    await t.conv.prepare({ prompt: "再看", images: [] }, { run: "r1" });
+    expect(t.conv.imagesInContext().has(imageKey(image("AAA")))).toBe(false); // (the archive's own frames are images too)
+    expect(roles(t.session)).toEqual(["archive"]);
+    await t.conv.ask("再看", { run: "r1", images: [image("AAA")], prepared: true });
+    expect(roles(t.session)).toEqual(["archive", "user", "assistant"]);
+    expect(t.trace.records("compact.done").filter((r) => r.reason === "cache expired")).toHaveLength(1);
+    expect(t.trace.records("compact.done")[0]!.run).toBe("r1");
+    expect(t.conv.imagesInContext().has(imageKey(image("AAA")))).toBe(true); // attached again with the new turn
+  });
+
+  it("through the responder: a picture of the expired context is attached again, not announced as already there", async () => {
+    const t = await withPicture();
+    t.at(cc.ttlMs + 1);
+    const wake = { chatMeanMs: 0, addressedMeanMs: 0, decayPerSec: 1e9, quietThreshold: 0.3, maxWaitMs: 1e12, addressedMaxWaitMs: 1e12, maxBatch: 1e9 };
+    const stored = { id: 7 };
+    const pictures = { capture: async () => [stored], image: async () => image("AAA") };
+    const ran = Promise.withResolvers<void>();
+    const ask = t.conv.ask.bind(t.conv);
+    t.conv.ask = (p, c) => ask(p, c).finally(() => ran.resolve()); // the run's end is the signal to look
+    const r = new PiResponder(async () => t.conv, { wake, random: () => 0.5, images: { maxPerRun: 4, load: async (u: string) => image(u) }, pictures });
+    r.notify({ platform: "qq", groupId: "g1", messageId: "m1", userId: "42", nickname: "Alice", ts: 1_700_000_000, text: "又是这张", selfId: "1", isSelf: false, mentionsSelf: false, images: [{ url: "AAA" }] }, false);
+    await ran.promise;
+    const prompt = t.session.promptLog.at(-1)!.text;
+    expect(prompt).not.toContain("already in context");
+    expect(prompt).toContain('images="1"');
+    const turn = t.session.state.messages.findLast((m) => m.role === "user")!;
+    expect(Array.isArray(turn.content) && turn.content.some((b) => b.type === "image" && b.data === "AAA")).toBe(true);
+    expect(roles(t.session)).toEqual(["archive", "user", "assistant"]);
+  });
+
+  it("the clear fallback after cache expiry keeps the run's trace key for the rest of the run", async () => {
+    const t = await withPicture({ cacheCompact: { ...cc, clearFallback: true, minSavedTokens: 1500, minSavedRatio: 0.2 } });
+    await t.conv.compact(); // archive in place: compacting again cannot save much, clearing can
+    await t.conv.ask("小问题");
+    t.at(cc.ttlMs + 1);
+    await t.conv.ask("好久不见", { run: "r9" });
+    expect(t.trace.records("cache.clear")).toHaveLength(1);
+    expect(t.trace.records("cache.clear")[0]!.run).toBe("r9");
+    expect(t.trace.records("conv.state").at(-1)).toMatchObject({ run: "r9", reason: "clear after cache expiry" });
+    expect(t.trace.records("turn.start").at(-1)).toMatchObject({ run: "r9", kind: "message" });
+    expect(t.trace.records("turn.end").at(-1)!.run).toBe("r9");
   });
 });

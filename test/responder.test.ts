@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
 import { imageKey } from "../src/context/image-key.js";
 import { attachImages, formatBatch, formatPrompt, PiResponder, sampleExponential, type PiResponderOptions } from "../src/responder.js";
 import type { ImageContent } from "@earendil-works/pi-ai";
-import type { Conversation, GroupMessage, ImageSource, PendingMessage, WakeConfig } from "../src/types.js";
+import type { Conversation, GroupMessage, ImageSource, PendingMessage, PictureArchive, WakeConfig } from "../src/types.js";
 import { openDb } from "../src/db/open.js";
 import { PendingStore } from "../src/pending-store.js";
 import { SpeakStore } from "../src/speak-store.js";
@@ -152,6 +152,36 @@ describe("images in a batch", () => {
     jest.advanceTimersByTime(20);
     await flush();
     expect(asked[0]!.images).toEqual([]);
+  });
+
+  it("decides which pictures are repeats only after prepare: one its housekeeping dropped is attached again, without the notice", async () => {
+    for (const drops of [true, false]) {
+      let keys: ReadonlySet<string> = new Set([imageKey(img("u1"))]);
+      const pictures: PictureArchive = { capture: async () => [{ id: 7 }], image: async () => img("u1") };
+      const asked: { prompt: string; images?: ImageContent[]; prepared?: boolean }[] = [];
+      const conv: Conversation = {
+        acceptsImages: true,
+        imagesInContext: () => keys,
+        async prepare() {
+          if (drops) keys = new Set(); // e.g. the cache-expiry compaction archived the whole context
+        },
+        async ask(prompt, ctx) { asked.push({ prompt, images: ctx?.images, prepared: ctx?.prepared }); return ""; },
+      };
+      const r = new PiResponder(async () => conv, opts(10, 10, { images: source(4), pictures }));
+      r.notify({ ...msg("gx", "look"), images: [{ url: "u1" }] }, false);
+      jest.advanceTimersByTime(20);
+      await flush();
+      expect(asked).toHaveLength(1);
+      expect(asked[0]!.prepared).toBe(true);
+      if (drops) {
+        expect(asked[0]!.images?.map((i) => i.data)).toEqual(["u1"]);
+        expect(asked[0]!.prompt).toContain('images="1"');
+        expect(asked[0]!.prompt).not.toContain("already in context");
+      } else {
+        expect(asked[0]!.images).toEqual([]);
+        expect(asked[0]!.prompt).toContain("Pictures i7 are already in context");
+      }
+    }
   });
 
   it("adds no image notice when nothing was attached", () => {
@@ -514,6 +544,47 @@ describe("PiResponder restart", () => {
     r.notify(msg("1", "a", "10"), false);
     r.notify(msg("1", "a", "10"), false);
     expect(new PendingStore(db).load()).toHaveLength(1);
+  });
+
+  it("a halted responder (shutdown) schedules nothing, starts no run and keeps every pending row for the restart", async () => {
+    const db = openDb(":memory:");
+    const trace = memoryEventLog();
+    const log: string[] = [];
+    const r = boot(db, fakeConversation(log).conversation, { wake: wakeCfg(1000, 1000), events: trace.events });
+    r.notify(msg("1", "a", "10"), false);
+    r.halt();
+    r.notify(msg("1", "b", "11"), true); // arrives during the shutdown
+    jest.advanceTimersByTime(1_000_000);
+    await flush();
+    expect(log).toEqual([]);
+    expect(trace.names("wake.scheduled", "wake.fire", "run.start")).toEqual(["wake.scheduled"]); // only a's, cancelled by the halt
+    expect(trace.records("responder.halt")[0]).toMatchObject({ cancelled_wakeups: 1, running: 0 });
+    expect(new PendingStore(db).load().map((p) => p.msg.messageId)).toEqual(["10", "11"]);
+
+    const after = boot(db, fakeConversation(log).conversation);
+    expect(after.restore()).toBe(2);
+    jest.advanceTimersByTime(1);
+    await flush();
+    expect(log).toEqual(["start a|b", "end"]);
+  });
+
+  it("a run in progress when halted may finish, but its batch (and what queued behind it) stays in the database", async () => {
+    for (const fail of [undefined, "send failed: client stopped"]) {
+      const db = openDb(":memory:");
+      const log: string[] = [];
+      const held = fakeConversation(log, { hold: true, fail });
+      const r = boot(db, held.conversation);
+      r.notify(msg("1", "a", "10"), false);
+      jest.advanceTimersByTime(1);
+      await flush();
+      r.notify(msg("1", "b", "11"), false); // its wake-up is scheduled behind the run
+      r.halt();
+      held.release();
+      jest.advanceTimersByTime(1_000_000);
+      await flush();
+      expect(log).toEqual(["start a", "end"]); // "b" never runs
+      expect(new PendingStore(db).load().map((p) => p.msg.messageId)).toEqual(["10", "11"]);
+    }
   });
 });
 

@@ -449,11 +449,19 @@ export interface Conversation {
    * Runs the agent on `prompt` and returns its final text (the group never sees it: only `send` posts).
    * `run` correlates the turn's events with the responder's. `addressed`: the batch @-mentions the agent or replies to
    * it, so a turn that ends without `send` is followed by one reminder turn. Throws if the model call fails.
+   * Without `prepared`, the start-of-run housekeeping (`prepare`) runs first; `prepared: true` = the caller already ran
+   * `prepare` for this run (it is not repeated).
    */
-  ask(prompt: string, ctx?: { run?: string; addressed?: boolean; mustSpeak?: boolean; images?: ImageContent[] }): Promise<string>;
+  ask(prompt: string, ctx?: { run?: string; addressed?: boolean; mustSpeak?: boolean; images?: ImageContent[]; prepared?: boolean }): Promise<string>;
+  /**
+   * The start-of-run housekeeping that can change the live context (cache-expiry compaction or clear, memory flush,
+   * threshold compaction), sized for the upcoming turn `estimate` (its text + pictures). The responder calls it BEFORE it
+   * decides which pictures are already in context, then `ask(..., { prepared: true })`. Never called during a run.
+   */
+  prepare?(estimate: { prompt: string; images?: readonly ImageContent[] }, ctx?: { run?: string }): Promise<void>;
   /** The model can read images; unset/false: the responder does not fetch any. */
   readonly acceptsImages?: boolean;
-  /** `imageKey`s of the pictures already in the live context (the responder does not attach those again). */
+  /** `imageKey`s of the pictures already in the live context (the responder does not attach those again). Asked after `prepare`. */
   imagesInContext?(): ReadonlySet<string>;
   /** Archives the whole live context now (console `compact`); undefined = nothing to archive. Never called during a run. */
   compact?(): Promise<{ archived: number; tokensBefore: number; tokensAfter: number } | undefined>;

@@ -129,10 +129,15 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 
 let stopping = false;
 const shutdown = async (signal: string) => {
-  if (stopping) return;
+  if (stopping) {
+    logger.warn(`${signal} again during shutdown: exiting now`);
+    process.exit(1);
+  }
   stopping = true;
   logger.info("shutting down");
   events.emit("proc.stop", { signal });
+  // First: no wake-up fires and no run starts any more, and no queued message is deleted, so `restore()` replays them after the restart.
+  responder.halt();
   client.stop();
   // Release the Colab runtime (bounded: `colab stop` has its own timeout) so it does not keep running unused.
   await colab?.shutdown().catch((err) => logger.error(`colab: release on shutdown failed: ${err instanceof Error ? err.message : String(err)}`));

@@ -1,6 +1,7 @@
 import path from "node:path";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { PYTHON_OUTPUT_MAX_BYTES } from "../config.js";
 import type { PythonRunResult, PythonTool, StreamOutput } from "../types.js";
 import { VirtualFs } from "../vfs.js";
 import { element } from "../xml.js";
@@ -8,8 +9,6 @@ import { element } from "../xml.js";
 export const RUN_PYTHON_TOOL = "run_python";
 /** Largest script uploaded (the agent writes at most 10 KiB per file; host-imported files may be bigger). */
 export const PYTHON_SOURCE_MAX_BYTES = 64 * 1024;
-/** The most output (per stream) the agent may ask for in one run: all of it enters the context. */
-export const PYTHON_OUTPUT_MAX_BYTES = 64 * 1024;
 /** Command-line arguments of one run: how many, and how many bytes together. */
 export const PYTHON_MAX_ARGS = 32;
 export const PYTHON_ARGS_MAX_BYTES = 8 * 1024;

@@ -168,6 +168,8 @@ export class PiResponder implements GroupResponder {
   private readonly log: Logger;
   private readonly events: EventLog;
   private runCount = 0;
+  /** Set by `halt()` (shutdown): no more wake-ups or runs, nothing leaves the pending queue. */
+  private halted = false;
 
   constructor(
     private readonly createConversation: ConversationFactory,
@@ -185,6 +187,7 @@ export class PiResponder implements GroupResponder {
       this.log.error(`could not persist pending message in group ${msg.groupId} (a restart would lose it): ${err instanceof Error ? err.message : String(err)}`);
       this.events.emit("queue.persist_failed", { group: msg.groupId, message_id: msg.messageId, error: err });
     }
+    if (this.halted) return; // shutting down: persisted only, `restore()` picks it up after the restart
     this.enqueue({ msg, addressed });
   }
 
@@ -270,6 +273,7 @@ export class PiResponder implements GroupResponder {
   private wake(groupId: string): void {
     const group = this.group(groupId);
     group.timer = undefined;
+    if (this.halted) return;
     group.events.emit("wake.fire", { queued: group.pending.length, busy: group.phase === "running" });
     group.tail = group.tail.then(() => this.run(groupId, group));
   }
@@ -308,6 +312,7 @@ export class PiResponder implements GroupResponder {
    * retry could loop forever). The batch leaves the database only once the run is over, so a crash replays it.
    */
   private async run(groupId: string, group: GroupState): Promise<void> {
+    if (this.halted) return; // queued behind a run when the shutdown came: its messages stay in the database
     const batch = group.pending.splice(0);
     group.waitingSince = group.addressedSince = undefined; // the maximum waits count from the next batch's first message
     if (batch.length === 0) return;
@@ -340,8 +345,17 @@ export class PiResponder implements GroupResponder {
       const pictures = this.opts.pictures;
       const captured = pictures ? await Promise.all(batch.map((p) => pictures.capture(p.msg))) : undefined; // already stored when they arrived, normally
       const imageIds = captured ? captured.map((row) => row.flatMap((x) => (x ? [x.id] : []))) : [];
+      const addressed = batch.some((p) => p.addressed);
       if (this.opts.images && conv.acceptsImages) {
-        const attached = await attachImages(batch, this.opts.images, captured, pictures, conv.imagesInContext?.());
+        // `prepare` (cache-expiry compaction or clear, memory flush, threshold compaction) can drop pictures from the context, so
+        // which pictures are already there is decided only after it; the draft (checked against the context as it is now) sizes it.
+        const before = conv.imagesInContext?.();
+        let attached = await attachImages(batch, this.opts.images, captured, pictures, before);
+        if (conv.prepare) {
+          await conv.prepare({ prompt: formatBatch(batch, attached.numbers, mustSpeak, imageIds, attached.repeated), images: attached.images }, { run });
+          const after = conv.imagesInContext?.();
+          if (!sameKeys(before, after)) attached = await attachImages(batch, this.opts.images, captured, pictures, after);
+        }
         prompt = formatBatch(batch, attached.numbers, mustSpeak, imageIds, attached.repeated);
         images = attached.images;
         const refs = batch.reduce((n, p) => n + (p.msg.images?.length ?? 0), 0);
@@ -351,11 +365,12 @@ export class PiResponder implements GroupResponder {
         }
       } else {
         prompt = formatBatch(batch, [], mustSpeak, imageIds);
+        await conv.prepare?.({ prompt }, { run });
       }
-      await conv.ask(prompt, { run, addressed: batch.some((p) => p.addressed), mustSpeak, images });
+      await conv.ask(prompt, { run, addressed, mustSpeak, images, prepared: conv.prepare !== undefined });
     } catch (err) {
       error = err;
-      this.log.error(`agent run failed in group ${groupId}, dropped ${batch.length} message(s): ${err instanceof Error ? err.message : String(err)}`);
+      this.log.error(`agent run failed in group ${groupId}, ${this.halted ? "kept for the restart" : "dropped"} ${batch.length} message(s): ${err instanceof Error ? err.message : String(err)}`);
     }
     if (error === undefined && every > 0) {
       group.runsSinceSpeakNotice = mustSpeak ? 0 : group.runsSinceSpeakNotice + 1;
@@ -366,13 +381,47 @@ export class PiResponder implements GroupResponder {
         group.events.emit("speak.persist_failed", { run, error: err });
       }
     }
-    try {
-      this.opts.pending?.remove(groupId, batch.map((p) => p.msg.messageId));
-    } catch (err) {
-      this.log.error(`could not clear handled messages of group ${groupId} (they may replay after a restart): ${err instanceof Error ? err.message : String(err)}`);
-      group.events.emit("queue.clear_failed", { run, error: err });
+    // Once halted (shutdown), nothing leaves the queue: a run cut short by the shutdown (sends failing, ...) is replayed by `restore()`.
+    if (this.halted) {
+      this.log.info(`group ${groupId}: shutting down, ${batch.length} message(s) of this run stay queued for the restart`);
+    } else {
+      try {
+        this.opts.pending?.remove(groupId, batch.map((p) => p.msg.messageId));
+      } catch (err) {
+        this.log.error(`could not clear handled messages of group ${groupId} (they may replay after a restart): ${err instanceof Error ? err.message : String(err)}`);
+        group.events.emit("queue.clear_failed", { run, error: err });
+      }
     }
-    group.events.emit("run.end", { run, ok: error === undefined, ms: Date.now() - t0, dropped: error === undefined ? 0 : batch.length, error });
+    const kept = this.halted ? batch.length : 0;
+    group.events.emit("run.end", { run, ok: error === undefined, ms: Date.now() - t0, dropped: error === undefined || kept > 0 ? 0 : batch.length, kept, error });
     this.setPhase(group, group.pending.length > 0 ? "waiting" : "idle", group.pending.length > 0 ? "messages arrived during the run" : "queue empty");
   }
+
+  /**
+   * Shutdown: cancels every scheduled wake-up and starts no run any more (messages still notified are only persisted). A run
+   * in progress may finish, but from now on nothing leaves the pending queue, so `restore()` after the restart replays every
+   * batch not already done (one answered during the shutdown may be answered twice; none is lost).
+   */
+  halt(): void {
+    if (this.halted) return;
+    this.halted = true;
+    let cancelled = 0;
+    let running = 0;
+    for (const g of this.groups.values()) {
+      if (g.phase === "running") running++;
+      if (!g.timer) continue;
+      clearTimeout(g.timer.handle);
+      g.timer = undefined;
+      cancelled++;
+    }
+    this.log.info(`halted: ${cancelled} wake-up(s) cancelled, ${running} run(s) in progress; queued messages stay in the database for the restart`);
+    this.events.emit("responder.halt", { cancelled_wakeups: cancelled, running });
+  }
+}
+
+/** Same picture keys (undefined = none). */
+function sameKeys(a: ReadonlySet<string> = new Set(), b: ReadonlySet<string> = new Set()): boolean {
+  if (a.size !== b.size) return false;
+  for (const k of a) if (!b.has(k)) return false;
+  return true;
 }

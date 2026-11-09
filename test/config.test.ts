@@ -124,3 +124,10 @@ describe("compaction after cache expiry", () => {
     expect(() => loadConfig({ CACHE_COMPACT_TTL_SECONDS: "0" })).toThrow(/CACHE_COMPACT_TTL_SECONDS/);
   });
 });
+
+describe("Colab output limit", () => {
+  it("is capped at the run_python maximum (64 KiB)", () => {
+    expect(loadConfig({ COLAB_OUTPUT_MAX_BYTES: "65536" }).colab.outputMaxBytes).toBe(65_536);
+    expect(() => loadConfig({ COLAB_OUTPUT_MAX_BYTES: "65537" })).toThrow(/COLAB_OUTPUT_MAX_BYTES/);
+  });
+});

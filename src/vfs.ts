@@ -2,6 +2,9 @@ import type { Database } from "bun:sqlite";
 import path from "node:path";
 import type { FileEntry, FileStat, VfsLimits } from "./types.js";
 
+/** Path limits: parent directories are stored as rows outside `maxTotalBytes`, so long/deep paths must be bounded. */
+export const MAX_PATH_BYTES = 1024;
+export const MAX_PATH_DEPTH = 32;
 export const DEFAULT_VFS_LIMITS: VfsLimits = { maxFileBytes: 1024 * 1024, maxTotalBytes: 64 * 1024 * 1024 };
 
 /** Errors carry a POSIX-style `code`, like Node's fs errors, so tool messages read naturally. */
@@ -42,7 +45,10 @@ export class VirtualFs {
   /** Absolute normalised path. Relative paths resolve against "/". */
   static normalize(p: string): string {
     if (p.includes("\0")) throw new VfsError("EINVAL", "invalid path", p.replaceAll("\0", "\\0"));
-    return path.posix.resolve("/", p);
+    const n = path.posix.resolve("/", p);
+    if (Buffer.byteLength(n) > MAX_PATH_BYTES) throw new VfsError("EINVAL", `path too long (> ${MAX_PATH_BYTES} bytes)`, `${n.slice(0, 64)}…`);
+    if (n.split("/").length - 1 > MAX_PATH_DEPTH) throw new VfsError("EINVAL", `path too deep (> ${MAX_PATH_DEPTH} components)`, `${n.slice(0, 64)}…`);
+    return n;
   }
 
   stat(p: string): FileStat | undefined {
@@ -163,7 +169,7 @@ export class VirtualFs {
       if (!path.posix.matchesGlob(target, pattern)) continue;
       if (opts.ignore?.some((g) => path.posix.matchesGlob(rel, g))) continue;
       out.push(e.path);
-      if (opts.limit !== undefined && out.length >= opts.limit) break;
+      if (opts.limit !== undefined && out.length >= Math.max(1, opts.limit)) break;
     }
     return out;
   }
