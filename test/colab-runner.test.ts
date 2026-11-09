@@ -5,13 +5,14 @@ import { ColabRunner, type IdleTimer } from "../src/colab/runner.js";
 import { openDb } from "../src/db/open.js";
 import type { CliResult, ColabCli, ColabConfig } from "../src/types.js";
 
-const config: Pick<ColabConfig, "auth" | "sessionName" | "idleMs" | "createTimeoutMs" | "outputMaxBytes" | "maxPerHour"> = {
+const config: Pick<ColabConfig, "auth" | "sessionName" | "idleMs" | "createTimeoutMs" | "outputMaxBytes" | "maxPerHour" | "env"> = {
   auth: undefined,
   sessionName: "rf-test",
   idleMs: 60_000,
   createTimeoutMs: 1000,
   outputMaxBytes: 8000,
   maxPerHour: 100,
+  env: {},
 };
 const ok = (over: Partial<CliResult> = {}): CliResult => ({ code: 0, stdout: "", stderr: "", timedOut: false, aborted: false, ...over });
 /** Lets every queued job (all fakes resolve without timers) run to the end. */
@@ -24,7 +25,7 @@ function manualTimer() {
   return { timer, armed, fire: () => [...armed.entries()].forEach(([id, t]) => (armed.delete(id), t.fn())) };
 }
 
-const packedSchema = z.object({ marker: z.string(), max_bytes: z.number(), args: z.array(z.string()) });
+const packedSchema = z.object({ marker: z.string(), max_bytes: z.number(), args: z.array(z.string()), env: z.record(z.string(), z.string()) });
 /** The arguments `buildPayload` packed into `stdin` (the code sent to the kernel). */
 const packedArgs = (stdin: string) => packedSchema.parse(JSON.parse(Buffer.from(/__rain_fish_run\("([A-Za-z0-9+/=]+)"\)/.exec(stdin)![1]!, "base64").toString("utf-8")));
 
@@ -94,6 +95,22 @@ describe("ColabRunner", () => {
     await t.runner.run({ ...req, maxOutputBytes: 50_000, args: ["a b", "--x=$(rm -rf /)"] });
     expect(sent.map((s) => s.max_bytes)).toEqual([config.outputMaxBytes, 50_000]);
     expect(sent.map((s) => s.args)).toEqual([[], ["a b", "--x=$(rm -rf /)"]]);
+  });
+
+  it("hands configured secrets to the script as environment and masks them in what comes back to the agent", async () => {
+    let env: Record<string, string> = {};
+    const leaked = { ...success, stdout: { head: "key=sk-secret-123\n", tail: "end sk-secret-123", bytes: 40 }, stderr: { head: "sk-secret-123", tail: "", bytes: 13 } };
+    const t = setup({
+      config: { env: { TAVILY_API_KEY: "sk-secret-123" } },
+      exec: (stdin) => {
+        env = packedArgs(stdin).env;
+        return ok({ stdout: resultLine(stdin, leaked) });
+      },
+    });
+    const r = await t.runner.run({ ...req, args: ["query"] });
+    expect(env).toEqual({ TAVILY_API_KEY: "sk-secret-123" });
+    expect(JSON.stringify(r)).not.toContain("sk-secret-123");
+    expect(r.stdout.head).toBe("key=[REDACTED]\n");
   });
 
   it("releases the runtime after the idle time and creates a new one for the next run", async () => {

@@ -11,7 +11,7 @@ const STOP_TIMEOUT_MS = 60_000;
 const RESTART_TIMEOUT_MS = 60_000;
 const HOUR_MS = 3_600_000;
 
-type RunnerConfig = Pick<ColabConfig, "auth" | "sessionName" | "idleMs" | "createTimeoutMs" | "outputMaxBytes" | "maxPerHour">;
+type RunnerConfig = Pick<ColabConfig, "auth" | "sessionName" | "idleMs" | "createTimeoutMs" | "outputMaxBytes" | "maxPerHour" | "env">;
 
 export interface ColabRunnerOptions {
   cli: ColabCli;
@@ -126,7 +126,7 @@ export class ColabRunner {
 
   private async exec(req: PythonRunRequest): Promise<{ ok: true; result: PythonRunResult } | { ok: false; detail: string }> {
     const marker = `__rain_fish_result_${randomUUID()}__`;
-    const code = buildPayload({ name: req.name, source: req.source, args: req.args, timeoutSeconds: req.timeoutSeconds, maxBytes: req.maxOutputBytes ?? this.o.config.outputMaxBytes, marker });
+    const code = buildPayload({ name: req.name, source: req.source, args: req.args, env: this.o.config.env, timeoutSeconds: req.timeoutSeconds, maxBytes: req.maxOutputBytes ?? this.o.config.outputMaxBytes, marker });
     const started = this.now();
     // `--timeout` of `colab exec` is an idle limit (seconds without output); the launcher prints only at the end.
     const idle = req.timeoutSeconds + EXEC_GRACE_SECONDS;
@@ -139,7 +139,7 @@ export class ColabRunner {
     const parsed = parseResult(r.stdout, marker);
     if (parsed === undefined) return { ok: false, detail: `exit ${r.code}: ${tailOf(r)}` };
     if ("error" in parsed) throw new Error(`The remote launcher failed: ${parsed.error}`);
-    const res = parsed.ok;
+    const res = this.mask(parsed.ok);
     this.log.debug(`${req.group ? `group ${req.group}: ` : ""}${req.name}: exit ${res.exitCode}${res.timedOut ? " (timed out)" : ""} in ${res.durationMs}ms`);
     this.events.emit("colab.exec", {
       group: req.group,
@@ -154,6 +154,14 @@ export class ColabRunner {
       stderr_bytes: res.stderr.bytes,
     });
     return { ok: true, result: res };
+  }
+
+  /** The secrets handed to the script must never come back to the model (a script could print its environment): they are masked in both streams. */
+  private mask(r: PythonRunResult): PythonRunResult {
+    const secrets = Object.values(this.o.config.env).filter((s) => s.length > 0);
+    if (secrets.length === 0) return r;
+    const hide = (s: string) => secrets.reduce((t, v) => t.split(v).join("[REDACTED]"), s);
+    return { ...r, stdout: { ...r.stdout, head: hide(r.stdout.head), tail: hide(r.stdout.tail) }, stderr: { ...r.stderr, head: hide(r.stderr.head), tail: hide(r.stderr.tail) } };
   }
 
   private async ensureReady(): Promise<void> {

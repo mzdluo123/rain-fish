@@ -12,8 +12,8 @@ export const REMOTE_RUN_ROOT = "/content/rain-fish-runs";
  * ever spliced into Python syntax or a command line; an argument after the script name belongs to the script, never to `python`. The result is
  * one line `<marker><json>` on the kernel's stdout; the script's own output never reaches that stream.
  */
-export function buildPayload(a: { name: string; source: string; args: readonly string[]; timeoutSeconds: number; maxBytes: number; marker: string }): string {
-  const packed = Buffer.from(JSON.stringify({ name: a.name, source: a.source, args: a.args, timeout: a.timeoutSeconds, max_bytes: a.maxBytes, marker: a.marker, root: REMOTE_RUN_ROOT }), "utf-8").toString("base64");
+export function buildPayload(a: { name: string; source: string; args: readonly string[]; env: Readonly<Record<string, string>>; timeoutSeconds: number; maxBytes: number; marker: string }): string {
+  const packed = Buffer.from(JSON.stringify({ name: a.name, source: a.source, args: a.args, env: a.env, timeout: a.timeoutSeconds, max_bytes: a.maxBytes, marker: a.marker, root: REMOTE_RUN_ROOT }), "utf-8").toString("base64");
   return `def __rain_fish_run(packed):
     import base64, json, os, shutil, signal, subprocess, sys, tempfile, time
     a = json.loads(base64.b64decode(packed).decode("utf-8"))
@@ -28,7 +28,7 @@ export function buildPayload(a: { name: string; source: string; args: readonly s
         paths = {"stdout": os.path.join(d, ".stdout"), "stderr": os.path.join(d, ".stderr")}
         t0 = time.monotonic()
         with open(paths["stdout"], "wb") as out, open(paths["stderr"], "wb") as err:
-            proc = subprocess.Popen([sys.executable, a["name"], *a["args"]], cwd=d, stdin=subprocess.DEVNULL, stdout=out, stderr=err, start_new_session=True)
+            proc = subprocess.Popen([sys.executable, a["name"], *a["args"]], cwd=d, env={**os.environ, **a["env"]}, stdin=subprocess.DEVNULL, stdout=out, stderr=err, start_new_session=True)
             timed_out = False
             try:
                 proc.wait(timeout=a["timeout"])

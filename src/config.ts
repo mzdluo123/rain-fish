@@ -117,6 +117,8 @@ export const configSchema = z
     COLAB_EXEC_MAX_PER_RUN: z.coerce.number().int().positive().default(3),
     /** Runs per hour, all groups together. */
     COLAB_EXEC_MAX_PER_HOUR: z.coerce.number().int().positive().default(30),
+    /** Tavily search key, handed to `run_python` scripts as the environment variable of the same name (never as an argument, never shown to the model; it is masked in script output). */
+    TAVILY_API_KEY: z.string().min(1).optional(),
     // --- execution trace (structured, rotating event log) ---
     TRACE_ENABLED: flag(true),
     /** Directory of the trace files (`agent.jsonl` + rotated `agent.<time>.jsonl.gz`). */
@@ -182,6 +184,7 @@ export const configSchema = z
       outputMaxBytes: e.COLAB_OUTPUT_MAX_BYTES,
       maxPerRun: e.COLAB_EXEC_MAX_PER_RUN,
       maxPerHour: e.COLAB_EXEC_MAX_PER_HOUR,
+      env: (e.TAVILY_API_KEY ? { TAVILY_API_KEY: e.TAVILY_API_KEY } : {}) as Record<string, string>,
     },
     backfill: {
       minMessages: e.BACKFILL_MIN_MESSAGES,
