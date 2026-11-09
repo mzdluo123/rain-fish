@@ -8,11 +8,12 @@ export const REMOTE_RUN_ROOT = "/content/rain-fish-runs";
  * The code sent to the Colab kernel for one run. The kernel only launches: the script runs as its own `python` process in a fresh
  * temporary directory, in its own process group, with stdin closed, so no variables leak from one run into the next and a timeout
  * kills everything the script started. Output goes to files (no pipe can fill up) and only head + tail come back. Everything the
- * agent supplied (file name, source) travels as base64 JSON, so nothing it wrote is ever spliced into Python syntax. The result is
+ * agent supplied (file name, source, argv) travels as base64 JSON and reaches `Popen` as a list (no shell), so nothing it wrote is
+ * ever spliced into Python syntax or a command line; an argument after the script name belongs to the script, never to `python`. The result is
  * one line `<marker><json>` on the kernel's stdout; the script's own output never reaches that stream.
  */
-export function buildPayload(a: { name: string; source: string; timeoutSeconds: number; maxBytes: number; marker: string }): string {
-  const args = Buffer.from(JSON.stringify({ name: a.name, source: a.source, timeout: a.timeoutSeconds, max_bytes: a.maxBytes, marker: a.marker, root: REMOTE_RUN_ROOT }), "utf-8").toString("base64");
+export function buildPayload(a: { name: string; source: string; args: readonly string[]; timeoutSeconds: number; maxBytes: number; marker: string }): string {
+  const packed = Buffer.from(JSON.stringify({ name: a.name, source: a.source, args: a.args, timeout: a.timeoutSeconds, max_bytes: a.maxBytes, marker: a.marker, root: REMOTE_RUN_ROOT }), "utf-8").toString("base64");
   return `def __rain_fish_run(packed):
     import base64, json, os, shutil, signal, subprocess, sys, tempfile, time
     a = json.loads(base64.b64decode(packed).decode("utf-8"))
@@ -27,7 +28,7 @@ export function buildPayload(a: { name: string; source: string; timeoutSeconds: 
         paths = {"stdout": os.path.join(d, ".stdout"), "stderr": os.path.join(d, ".stderr")}
         t0 = time.monotonic()
         with open(paths["stdout"], "wb") as out, open(paths["stderr"], "wb") as err:
-            proc = subprocess.Popen([sys.executable, a["name"]], cwd=d, stdin=subprocess.DEVNULL, stdout=out, stderr=err, start_new_session=True)
+            proc = subprocess.Popen([sys.executable, a["name"], *a["args"]], cwd=d, stdin=subprocess.DEVNULL, stdout=out, stderr=err, start_new_session=True)
             timed_out = False
             try:
                 proc.wait(timeout=a["timeout"])
@@ -57,7 +58,7 @@ export function buildPayload(a: { name: string; source: string; timeoutSeconds: 
             shutil.rmtree(d, ignore_errors=True)
     print(a["marker"] + json.dumps(res), flush=True)
 
-__rain_fish_run("${args}")
+__rain_fish_run("${packed}")
 del __rain_fish_run
 `;
 }

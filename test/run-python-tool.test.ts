@@ -29,10 +29,21 @@ describe("run_python", () => {
     const t = await setup();
     t.env.fs.writeFile("/scripts/calc.py", "print(6*7)");
     const text = await t.run({ path: "scripts/calc.py" });
-    expect(t.requests).toEqual([{ name: "calc.py", source: "print(6*7)", timeoutSeconds: 60, signal: undefined, callId: "call-1" }]);
+    expect(t.requests).toEqual([{ name: "calc.py", source: "print(6*7)", args: [], timeoutSeconds: 60, signal: undefined, callId: "call-1" }]);
     expect(text).toContain("/scripts/calc.py: exit code 0 (1.2s)");
     expect(text).toContain('<stdout bytes="3">\n42\n');
     expect(text).toContain("<stderr/>");
+  });
+
+  it("passes command-line arguments as given, and refuses too many, too long or NUL-containing ones", async () => {
+    const t = await setup();
+    t.env.fs.writeFile("/a.py", "");
+    await t.run({ path: "/a.py", args: ["x y", "-c", "'quoted'"] });
+    expect(t.requests[0]!.args).toEqual(["x y", "-c", "'quoted'"]);
+    await expect(t.run({ path: "/a.py", args: Array.from({ length: 33 }, () => "a") })).rejects.toThrow(/at most 32 arguments/);
+    await expect(t.run({ path: "/a.py", args: ["x".repeat(9000)] })).rejects.toThrow(/over 8192 bytes/);
+    await expect(t.run({ path: "/a.py", args: ["a\0b"] })).rejects.toThrow(/NUL/);
+    expect(t.requests).toHaveLength(1);
   });
 
   it("refuses what is not an existing .py file, without running anything", async () => {

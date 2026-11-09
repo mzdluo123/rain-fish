@@ -126,7 +126,7 @@ export class ColabRunner {
 
   private async exec(req: PythonRunRequest): Promise<{ ok: true; result: PythonRunResult } | { ok: false; detail: string }> {
     const marker = `__rain_fish_result_${randomUUID()}__`;
-    const code = buildPayload({ name: req.name, source: req.source, timeoutSeconds: req.timeoutSeconds, maxBytes: req.maxOutputBytes ?? this.o.config.outputMaxBytes, marker });
+    const code = buildPayload({ name: req.name, source: req.source, args: req.args, timeoutSeconds: req.timeoutSeconds, maxBytes: req.maxOutputBytes ?? this.o.config.outputMaxBytes, marker });
     const started = this.now();
     // `--timeout` of `colab exec` is an idle limit (seconds without output); the launcher prints only at the end.
     const idle = req.timeoutSeconds + EXEC_GRACE_SECONDS;
@@ -149,6 +149,7 @@ export class ColabRunner {
       duration_ms: res.durationMs,
       wall_ms: this.now() - started,
       source_bytes: Buffer.byteLength(req.source, "utf-8"),
+      args_count: req.args.length,
       stdout_bytes: res.stdout.bytes,
       stderr_bytes: res.stderr.bytes,
     });

@@ -24,7 +24,7 @@ function manualTimer() {
   return { timer, armed, fire: () => [...armed.entries()].forEach(([id, t]) => (armed.delete(id), t.fn())) };
 }
 
-const packedSchema = z.object({ marker: z.string(), max_bytes: z.number() });
+const packedSchema = z.object({ marker: z.string(), max_bytes: z.number(), args: z.array(z.string()) });
 /** The arguments `buildPayload` packed into `stdin` (the code sent to the kernel). */
 const packedArgs = (stdin: string) => packedSchema.parse(JSON.parse(Buffer.from(/__rain_fish_run\("([A-Za-z0-9+/=]+)"\)/.exec(stdin)![1]!, "base64").toString("utf-8")));
 
@@ -66,7 +66,7 @@ function setup(o: { exec?: Exec; create?: () => CliResult; config?: Partial<type
   const subs = () => calls.map((c) => c.find((a) => ["new", "exec", "stop", "restart-kernel"].includes(a)));
   return { runner, store, calls, subs, statesAtCreate, maxActive: () => maxActive, clock };
 }
-const req = { name: "a.py", source: "print('hi')", timeoutSeconds: 10 };
+const req = { name: "a.py", source: "print('hi')", args: [], timeoutSeconds: 10 };
 
 describe("ColabRunner", () => {
   it("creates the runtime on the first run only, even when two runs start together, and runs them one at a time", async () => {
@@ -82,17 +82,18 @@ describe("ColabRunner", () => {
     expect(t.store.load()?.state).toBe("ready");
   });
 
-  it("sends the configured output limit, or the one the call asked for", async () => {
-    const limits: number[] = [];
+  it("sends the configured output limit, or the one the call asked for, and the call's arguments", async () => {
+    const sent: { max_bytes: number; args: string[] }[] = [];
     const t = setup({
       exec: (stdin) => {
-        limits.push(packedArgs(stdin).max_bytes);
+        sent.push(packedArgs(stdin));
         return ok({ stdout: resultLine(stdin, success) });
       },
     });
     await t.runner.run(req);
-    await t.runner.run({ ...req, maxOutputBytes: 50_000 });
-    expect(limits).toEqual([config.outputMaxBytes, 50_000]);
+    await t.runner.run({ ...req, maxOutputBytes: 50_000, args: ["a b", "--x=$(rm -rf /)"] });
+    expect(sent.map((s) => s.max_bytes)).toEqual([config.outputMaxBytes, 50_000]);
+    expect(sent.map((s) => s.args)).toEqual([[], ["a b", "--x=$(rm -rf /)"]]);
   });
 
   it("releases the runtime after the idle time and creates a new one for the next run", async () => {

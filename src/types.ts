@@ -162,6 +162,8 @@ export interface PythonRunRequest {
   /** File name on the remote side (the VFS basename, ends in `.py`). */
   name: string;
   source: string;
+  /** Command-line arguments of the script (`sys.argv[1:]`). */
+  args: readonly string[];
   /** Wall-clock limit of the script; it is killed (with everything it started) when it runs out. */
   timeoutSeconds: number;
   /** Per stream, bytes returned (head + tail); omitted = `COLAB_OUTPUT_MAX_BYTES`. */
