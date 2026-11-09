@@ -236,7 +236,7 @@ describe("snap compaction", () => {
 describe("memory flush", () => {
   // flush at 9000 tokens, compaction at 12000; roomy enough that a fresh compaction ends below the flush line (the snap frames themselves cost ~3k)
   const flushCtx = { flushRatio: 0.75, compactTokens: 12_000 };
-  const isFlush = (p: { text: string }) => p.text.includes("整理记忆");
+  const isFlush = (p: { text: string }) => p.text.includes("Memory flush");
   const fill = async (conv: PiConversation, rounds: number) => {
     for (let i = 1; i <= rounds; i++) await conv.ask(`第${i}个问题 ` + tokensOf(380));
   };
@@ -265,7 +265,7 @@ describe("memory flush", () => {
     const { conv, store } = await setup({ script: bigScript, context: flushCtx });
     await fill(conv, 10); // flushed, not yet compacted
     const stored = JSON.stringify(store.load("g1").messages.map((m) => m.message));
-    expect(stored).toContain("整理记忆");
+    expect(stored).toContain("Memory flush");
   });
 
   it("a restart does not forget that the flush already ran in this cycle, and the next cycle flushes again", async () => {
@@ -283,12 +283,12 @@ describe("memory flush", () => {
   });
 
   it("a failed flush is logged and does not block the message; it is retried on the next ask and leaves no trace", async () => {
-    const script: Script = (p, n) => (p.includes("整理记忆") ? [assistantError("overloaded")] : bigScript(p, n));
+    const script: Script = (p, n) => (p.includes("Memory flush") ? [assistantError("overloaded")] : bigScript(p, n));
     const { conv, session, entries, store, speech } = await setup({ script, context: flushCtx });
     await fill(conv, 11);
     expect(entries.some((e) => e.level === "warn" && e.msg.includes("memory flush failed") && e.msg.includes("overloaded"))).toBe(true);
     expect(session.promptLog.filter(isFlush).length).toBeGreaterThanOrEqual(2); // retried
-    expect(JSON.stringify(store.load("g1").messages)).not.toContain("整理记忆");
+    expect(JSON.stringify(store.load("g1").messages)).not.toContain("Memory flush");
     expect(speech.muted).toBe(false); // un-muted even though the flush failed
     expect(roles(session).filter((r) => r === "user")).toHaveLength(11); // every real question answered
   });
@@ -343,7 +343,7 @@ describe("event log", () => {
   });
 
   it("a failed flush is recorded with its error and the state goes back to fresh", async () => {
-    const script: Script = (p, n) => (p.includes("整理记忆") ? [assistantError("overloaded")] : bigScript(p, n));
+    const script: Script = (p, n) => (p.includes("Memory flush") ? [assistantError("overloaded")] : bigScript(p, n));
     const { conv, trace } = await setup({ script, context: flushCtx });
     for (let i = 1; i <= 10; i++) await conv.ask(`第${i}个问题 ` + tokensOf(380));
     expect(trace.records("flush.fail")[0]!.error).toMatchObject({ message: "overloaded" });
@@ -404,7 +404,7 @@ describe("reminder to send", () => {
     const { conv, session } = await setup({ script: (_p, n) => (n === 1 ? [assistantText("我在")] : sendCall(n)) });
     await conv.ask("@你 ？", { addressed: true });
     expect(prompts(session)).toHaveLength(2);
-    expect(prompts(session)[1]).toContain("没有调用 `send`");
+    expect(prompts(session)[1]).toContain("did not call `send`");
     expect(session.toolsPerPrompt[1]).toContain("send");
   });
 
@@ -412,8 +412,8 @@ describe("reminder to send", () => {
     const { conv, session } = await setup({ script: (_p, n) => (n === 1 ? [assistantText("嗯")] : sendCall(n)) });
     await conv.ask("闲聊", { mustSpeak: true });
     expect(prompts(session)).toHaveLength(2);
-    expect(prompts(session)[1]).toContain("必须说点什么");
-    expect(prompts(session)[1]).not.toContain("@ 了你");
+    expect(prompts(session)[1]).toContain("You were required to say something");
+    expect(prompts(session)[1]).not.toContain("@-mentioned or replied");
   });
 
   it("does not remind when the agent already sent, when nobody addressed it, or after one reminder", async () => {
@@ -519,7 +519,7 @@ describe("persona pin", () => {
     const v = await view(session);
     expect(v[0]!.role).toBe("user");
     expect(textOf(v[0]!)).toContain("口头禅：诶嘿");
-    expect(textOf(v[0]!)).toContain("[自我档案]");
+    expect(textOf(v[0]!)).toContain("[profile]");
     expect(v).toHaveLength(session.state.messages.length + 1);
     expect(session.state.messages.some((m) => textOf(m).includes("口头禅"))).toBe(false);
     expect(store.load("g1").messages.some((m) => textOf(m.message).includes("口头禅"))).toBe(false);
@@ -577,14 +577,14 @@ describe("archive across several compactions", () => {
       assistantText(`第${n}轮的回答 ` + tokensOf(250)),
     ];
     const { conv, store, trace } = await setup({ script, personaPaths: () => new Set(["/persona.md"]), context: { compactTokens: 5500, archiveTokens: 2500, recentTokens: 1200 } });
-    for (let i = 1; i <= 16; i++) await conv.ask(`<system>\n你的 QQ 账号是 1。\n</system>\n\n<message id="${i}">群友说第${i}句</message>`);
+    for (let i = 1; i <= 16; i++) await conv.ask(`<system>\nYour QQ account is 1.\n</system>\n\n<message id="${i}">群友说第${i}句</message>`);
     expect(trace.records("compact.done").length).toBeGreaterThanOrEqual(2); // really several rounds
     const archive = store.load("g1").archive!;
     expect(archive.sourceText).toContain("群友说第");
     expect(archive.sourceText).toContain("的回答");
     expect(archive.sourceText).not.toContain("旧版档案");
     expect(archive.sourceText).not.toContain("写入档案");
-    expect(archive.sourceText).not.toContain("QQ 账号");
+    expect(archive.sourceText).not.toContain("QQ account");
   });
 });
 

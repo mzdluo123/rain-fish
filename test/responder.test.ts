@@ -101,8 +101,8 @@ describe("sampleExponential", () => {
 describe("formatBatch", () => {
   it("starts with a system notice naming the bot's own account, then the messages", () => {
     const text = formatBatch([{ msg: { ...msg("100", "你好", "1"), selfId: "2165509679" }, addressed: false }, { msg: msg("100", "@2165509679 在吗", "2"), addressed: true }]);
-    expect(text).toMatch(/^<system>\n你的 QQ 账号是 2165509679。/);
-    expect(text).toContain("@2165509679 才是在叫你");
+    expect(text).toMatch(/^<system>\nYour QQ account is 2165509679./);
+    expect(text).toContain("Only @2165509679 in the text is addressed to you");
     expect(text.indexOf("</system>")).toBeLessThan(text.indexOf("<message "));
     expect(text.match(/<message /g)).toHaveLength(2);
   });
@@ -187,12 +187,12 @@ describe("must-speak notice", () => {
       jest.advanceTimersByTime(20);
       await flush();
     }
-    expect(seen.map((s) => s.prompt.includes("必须要说点什么"))).toEqual([false, false, true, false, false, true, false]);
+    expect(seen.map((s) => s.prompt.includes("You must say something"))).toEqual([false, false, true, false, false, true, false]);
     expect(seen.map((s) => s.mustSpeak)).toEqual([false, false, true, false, false, true, false]);
     r.notify(msg("2", "other group", "99"), false); // another group has its own count
     jest.advanceTimersByTime(20);
     await flush();
-    expect(seen.at(-1)!.prompt).not.toContain("必须要说点什么");
+    expect(seen.at(-1)!.prompt).not.toContain("You must say something");
   });
 
   it("keeps the count across a restart, and a failed run does not count", async () => {
@@ -215,10 +215,10 @@ describe("must-speak notice", () => {
     r = start(); // restart: 2 runs are remembered
     await send(r, 4); // 3rd counted run
     await send(r, 5); // must speak
-    expect(seen.map((p) => p.includes("必须要说点什么"))).toEqual([false, false, false, false, true]);
+    expect(seen.map((p) => p.includes("You must say something"))).toEqual([false, false, false, false, true]);
     r = start();
     await send(r, 6); // the counter was reset by the notice run, and that reset survived the restart
-    expect(seen.at(-1)).not.toContain("必须要说点什么");
+    expect(seen.at(-1)).not.toContain("You must say something");
     expect(new SpeakStore(db).load("1")).toBe(1);
   });
 
@@ -227,7 +227,7 @@ describe("must-speak notice", () => {
     const plain = formatBatch(batch, [[1]]);
     const withNotice = formatBatch(batch, [[1]], true);
     expect(withNotice.startsWith(plain)).toBe(true);
-    expect(withNotice.slice(plain.length)).toMatch(/^\n\n<system>\n你必须要说点什么来插入群友的聊天/);
+    expect(withNotice.slice(plain.length)).toMatch(/^\n\n<system>\nYou must say something to join the conversation/);
   });
 
   it("is never added when the setting is off", async () => {
@@ -239,7 +239,7 @@ describe("must-speak notice", () => {
       jest.advanceTimersByTime(20);
       await flush();
     }
-    expect(seen.some((p) => p.includes("必须要说点什么"))).toBe(false);
+    expect(seen.some((p) => p.includes("You must say something"))).toBe(false);
   });
 });
 

@@ -78,14 +78,14 @@ describe("archive message", () => {
 
 describe("archive hygiene", () => {
   it("leaves out program <system> blocks of user turns but keeps what the members said", () => {
-    const batch = userMsg('<system>\n你的 QQ 账号是 1。\n</system>\n\n<message id="1" sender="A">晚上吃火锅吗</message>\n\n<system>你必须要说点什么</system>');
-    const flush = userMsg("<system>\n整理记忆：这不是群里的消息。\n</system>");
+    const batch = userMsg('<system>\nYour QQ account is 1.\n</system>\n\n<message id="1" sender="A">晚上吃火锅吗</message>\n\n<system>你You must say something</system>');
+    const flush = userMsg("<system>\nMemory flush: this is not a group message.\n</system>");
     const text = serializeForArchive([batch, assistantText("好呀"), flush, assistantText("已整理")]);
     expect(text).toContain("晚上吃火锅吗");
     expect(text).toContain("好呀");
     expect(text).not.toContain("QQ 账号");
-    expect(text).not.toContain("整理记忆");
-    expect(text).not.toContain("必须要说点什么");
+    expect(text).not.toContain("Memory flush");
+    expect(text).not.toContain("You must say something");
     expect(text).toContain("已整理"); // what the agent said is history
   });
 

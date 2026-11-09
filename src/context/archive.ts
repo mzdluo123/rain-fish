@@ -5,9 +5,9 @@ import { frames, plannedFrameTokens, renderMany, resolveShape, serializeConversa
 import { estimateTextTokens } from "./estimate.js";
 
 /** Start of the archive message's first text block; how the archive is recognised in history. Group messages are `<message>` elements and their text is escaped, so no member can produce it. */
-export const ARCHIVE_MARKER = "<system>[归档]";
+export const ARCHIVE_MARKER = "<system>[archive]";
 // Not persona text: protocol framing that tells the model what the archive is.
-const LEAD_IN = `${ARCHIVE_MARKER} 以下是此前对话的归档，按时间从早到晚排列，请当作已经发生的历史。</system>`;
+const LEAD_IN = `${ARCHIVE_MARKER} Archive of the earlier conversation, oldest first; treat it as history that already happened.</system>`;
 
 export function isArchiveMessage(m: AgentMessage): boolean {
   if (m.role !== "user") return false;

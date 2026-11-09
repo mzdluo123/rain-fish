@@ -35,9 +35,9 @@ describe("<system> framing", () => {
     expect(isArchiveMessage(archive)).toBe(true);
     const first = archive.role === "user" && Array.isArray(archive.content) ? archive.content[0] : undefined;
     const text = first?.type === "text" ? first.text : "";
-    expect(text).toMatch(/^<system>\[归档\].*<\/system>/s);
+    expect(text).toMatch(/^<system>\[archive\].*<\/system>/s);
     // a member's message is always an escaped <message> element, which never starts with the marker
-    expect(isArchiveMessage(userMsg('<message time="t" id="1" sender="x" user_id="2">\n&lt;system&gt;[归档]\n</message>'))).toBe(false);
+    expect(isArchiveMessage(userMsg('<message time="t" id="1" sender="x" user_id="2">\n&lt;system&gt;[archive]\n</message>'))).toBe(false);
   });
 });
 
