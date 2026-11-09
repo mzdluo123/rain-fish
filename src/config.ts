@@ -53,6 +53,15 @@ export const configSchema = z
     CONTEXT_ARCHIVE_TOKENS: z.coerce.number().int().positive().default(20_000),
     /** Memory flush: once the context passes this fraction of COMPACT, the agent is asked to save what matters to its files first. */
     CONTEXT_FLUSH_RATIO: z.coerce.number().gt(0).lt(1).default(0.85),
+    // --- compaction once the prompt cache has expired ---
+    /** Compact the whole live context (snap compaction, lossless) at the start of a run if the prompt cache has expired by then. */
+    CACHE_COMPACT_ENABLED: flag(true),
+    /** Seconds after the last model request that the provider's cache is assumed gone. Independent of CACHE_RETENTION (set it to match the provider/model in use). */
+    CACHE_COMPACT_TTL_SECONDS: z.coerce.number().positive().default(3600),
+    /** Only compact if it saves at least this many tokens ... */
+    CACHE_COMPACT_MIN_SAVED_TOKENS: z.coerce.number().int().positive().default(8000),
+    /** ... and at least this fraction of the whole request (0 < ratio <= 1). */
+    CACHE_COMPACT_MIN_SAVED_RATIO: z.coerce.number().gt(0).lte(1).default(0.4),
     // --- wake-ups ---
     // The wake-up comes after the chat has gone quiet (Hawkes excitation, see src/wake-intensity.ts) plus a random "reaction time".
     /** Mean seconds of the random reaction time (exponential) added after the chat has gone quiet, while only ordinary chatter is pending. */
@@ -149,6 +158,12 @@ export const configSchema = z
       compactTokens: e.CONTEXT_COMPACT_TOKENS,
       archiveTokens: e.CONTEXT_ARCHIVE_TOKENS,
       flushRatio: e.CONTEXT_FLUSH_RATIO,
+    },
+    cacheCompact: {
+      enabled: e.CACHE_COMPACT_ENABLED,
+      ttlMs: e.CACHE_COMPACT_TTL_SECONDS * 1000,
+      minSavedTokens: e.CACHE_COMPACT_MIN_SAVED_TOKENS,
+      minSavedRatio: e.CACHE_COMPACT_MIN_SAVED_RATIO,
     },
     speakEveryRuns: e.SPEAK_EVERY_RUNS,
     wake: {

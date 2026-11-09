@@ -3,7 +3,7 @@ import { loadConfig } from "../src/config.js";
 
 describe("loadConfig", () => {
   it("has working defaults", () => {
-    expect(loadConfig({})).toEqual({ wsUrl: "ws://127.0.0.1:3001", token: undefined, groups: undefined, promptFile: "prompts/agent.md", personaSeedFile: "prompts/persona.md", dbPath: "data/bot.db", logLevel: "info", model: undefined, thinkingLevel: undefined, cacheRetention: "long", context: { recentTokens: 12_000, compactTokens: 60_000, archiveTokens: 20_000, flushRatio: 0.85 }, speakEveryRuns: 3, wake: { chatMeanMs: 45_000, addressedMeanMs: 1_000, decayPerSec: 0.4, quietThreshold: 0.3, maxWaitMs: 120_000, addressedMaxWaitMs: 20_000, maxBatch: 30 }, images: { maxBytes: 3 * 1024 * 1024, maxPerRun: 4, storeMaxBytes: 200 * 1024 * 1024, modelMaxPixels: 800_000, modelMaxEdge: 1568, detailMaxPixels: 1_150_000 }, send: { maxPerRun: 6, gapMs: 800 }, colab: { enabled: false, cliPath: "colab", auth: undefined, sessionName: "rain-fish", execTimeoutSeconds: 60, execMaxTimeoutSeconds: 300, idleMs: 900_000, createTimeoutMs: 180_000, outputMaxBytes: 8000, maxPerRun: 3, maxPerHour: 30, env: {} }, backfill: { minMessages: 100, maxAgeSeconds: 5 * 86_400 }, trace: { enabled: true, dir: "data/logs", maxFileBytes: 20 * 1024 * 1024, maxFiles: 30, maxAgeDays: 14, compress: true, content: false } });
+    expect(loadConfig({})).toEqual({ wsUrl: "ws://127.0.0.1:3001", token: undefined, groups: undefined, promptFile: "prompts/agent.md", personaSeedFile: "prompts/persona.md", dbPath: "data/bot.db", logLevel: "info", model: undefined, thinkingLevel: undefined, cacheRetention: "long", cacheCompact: { enabled: true, ttlMs: 3_600_000, minSavedTokens: 8000, minSavedRatio: 0.4 }, context: { recentTokens: 12_000, compactTokens: 60_000, archiveTokens: 20_000, flushRatio: 0.85 }, speakEveryRuns: 3, wake: { chatMeanMs: 45_000, addressedMeanMs: 1_000, decayPerSec: 0.4, quietThreshold: 0.3, maxWaitMs: 120_000, addressedMaxWaitMs: 20_000, maxBatch: 30 }, images: { maxBytes: 3 * 1024 * 1024, maxPerRun: 4, storeMaxBytes: 200 * 1024 * 1024, modelMaxPixels: 800_000, modelMaxEdge: 1568, detailMaxPixels: 1_150_000 }, send: { maxPerRun: 6, gapMs: 800 }, colab: { enabled: false, cliPath: "colab", auth: undefined, sessionName: "rain-fish", execTimeoutSeconds: 60, execMaxTimeoutSeconds: 300, idleMs: 900_000, createTimeoutMs: 180_000, outputMaxBytes: 8000, maxPerRun: 3, maxPerHour: 30, env: {} }, backfill: { minMessages: 100, maxAgeSeconds: 5 * 86_400 }, trace: { enabled: true, dir: "data/logs", maxFileBytes: 20 * 1024 * 1024, maxFiles: 30, maxAgeDays: 14, compress: true, content: false } });
   });
 
   it("treats empty values (KEY= in .env) as unset, so defaults apply", () => {
@@ -113,3 +113,14 @@ describe("THINKING_LEVEL", () => {
   });
 });
 
+
+describe("compaction after cache expiry", () => {
+  it("has its own settings (TTL independent of CACHE_RETENTION) and rejects nonsense", () => {
+    const d = loadConfig({}).cacheCompact;
+    expect(d).toEqual({ enabled: true, ttlMs: 3_600_000, minSavedTokens: 8000, minSavedRatio: 0.4 });
+    expect(loadConfig({ CACHE_RETENTION: "short" }).cacheCompact.ttlMs).toBe(3_600_000);
+    expect(loadConfig({ CACHE_COMPACT_ENABLED: "false", CACHE_COMPACT_TTL_SECONDS: "300" }).cacheCompact).toMatchObject({ enabled: false, ttlMs: 300_000 });
+    expect(() => loadConfig({ CACHE_COMPACT_MIN_SAVED_RATIO: "1.5" })).toThrow(/CACHE_COMPACT_MIN_SAVED_RATIO/);
+    expect(() => loadConfig({ CACHE_COMPACT_TTL_SECONDS: "0" })).toThrow(/CACHE_COMPACT_TTL_SECONDS/);
+  });
+});

@@ -2,7 +2,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { buildArchiveMessage, canReadImages, extendArchiveSource, serializeForArchive, type ArchiveBudget } from "./context/archive.js";
-import { estimateContextTokens, estimateMessageTokens, estimateTextTokens } from "./context/estimate.js";
+import { estimateContextTokens, estimateMessageTokens, estimateMessagesTokens, estimateTextTokens } from "./context/estimate.js";
 import { imageBlockTokens } from "./context/image-size.js";
 import { MEMORY_FLUSH_PROMPT } from "./context/memory.js";
 import { linkNotice, linkNudgePrompt, SEND_NUDGE_PROMPT, SPEAK_NUDGE_PROMPT } from "./context/nudge.js";
@@ -13,7 +13,7 @@ import { SPEAK_TOOLS } from "./tools/send.js";
 import type { RunBudget } from "./run-budget.js";
 import { noopEventLog, preview } from "./trace/event-log.js";
 import { traceSession } from "./trace/session-events.js";
-import type { ContextConfig, Conversation, EventLog, Logger } from "./types.js";
+import type { CacheCompactConfig, ContextConfig, Conversation, EventLog, Logger } from "./types.js";
 
 /** Tokens the pictures of a prompt will cost (measured from their headers). */
 const imageTokens = (images?: readonly ImageContent[]): number => (images ?? []).reduce((n, i) => n + imageBlockTokens(i), 0);
@@ -23,6 +23,10 @@ export interface PiConversationDeps {
   session: AgentSession;
   store: ConversationStore;
   context: ContextConfig;
+  /** Compaction after the prompt cache expired; omitted = never. */
+  cacheCompact?: CacheCompactConfig;
+  /** Clock (ms); replaceable in tests. */
+  now?: () => number;
   logger?: Logger;
   events?: EventLog;
   /** Per-run caps (messages posted, Python runs); each is reset at the start of every run and reminder turn. */
@@ -91,6 +95,7 @@ export class PiConversation implements Conversation {
         prompt = `${prompt}\n\n${linkNotice(unlinked)}`; // appended at the very end of the user turn: the cached prefix is untouched
         this.emit("links.unlinked", { count: unlinked.length, when: "run start" });
       }
+      await this.compactIfCacheExpired(prompt, imageTokens(images));
       await this.flushMemoryIfNeeded(prompt, imageTokens(images));
       await this.compactIfNeeded(prompt, imageTokens(images));
       const first = await this.runTurn(prompt, "message", images);
@@ -329,6 +334,33 @@ export class PiConversation implements Conversation {
     return dropped;
   }
 
+  /** Idle time since the last model request ended (the provider's cache is refreshed by it); undefined = no request in the history. */
+  private cacheIdleMs(): number | undefined {
+    const last = this.d.session.agent.state.messages.findLast((m) => m.role === "assistant");
+    if (!last || last.role !== "assistant") return undefined;
+    return (this.d.now?.() ?? Date.now()) - (last.timestamp + (last.durationMs ?? 0));
+  }
+
+  /**
+   * The prompt cache is gone (no request for longer than the TTL), so the next request pays for re-writing the whole prefix anyway:
+   * archive the entire live context first, if that shrinks the request a lot. Skipped (nothing changes) when the saving is small -
+   * and never done while the cache is alive, where it would throw away a cheap cache hit. Lossless: no memory flush.
+   */
+  private async compactIfCacheExpired(prompt: string, imageTokens = 0): Promise<void> {
+    const cfg = this.d.cacheCompact;
+    if (!cfg?.enabled) return;
+    const idle = this.cacheIdleMs();
+    if (idle === undefined || idle <= cfg.ttlMs) return;
+    const state = this.d.session.agent.state;
+    const offset = this.archived ? 1 : 0;
+    if (state.messages.length <= offset) return;
+    const tokens = this.contextTokens(prompt, imageTokens);
+    this.emit("cache.expired", { idle_ms: idle, ttl_ms: cfg.ttlMs, tokens });
+    const accept = (saved: number) => saved >= cfg.minSavedTokens && saved >= tokens * cfg.minSavedRatio;
+    const done = await this.archiveThrough(state.messages.length, offset, tokens, "cache expired", accept);
+    if (!done) this.emit("compact.skip", { tokens, reason: "cache expired but compaction would save too little" });
+  }
+
   /** Snap-compact older history once the context passes the threshold. */
   private async compactIfNeeded(prompt: string, imageTokens = 0): Promise<void> {
     const { context: c, groupId } = this.d;
@@ -346,13 +378,18 @@ export class PiConversation implements Conversation {
   }
 
   /** Moves messages [offset, cut) into the archive (memory + database); `cut` must be a turn start or the end of the transcript. */
-  private async archiveThrough(cut: number, offset: number, tokens: number, reason: "threshold" | "manual") {
+  private async archiveThrough(cut: number, offset: number, tokens: number, reason: "threshold" | "manual" | "cache expired", accept?: (savedTokens: number) => boolean) {
     const { session, groupId } = this.d;
     const state = session.agent.state;
     const messages = state.messages;
     const t0 = Date.now();
     const source = extendArchiveSource(this.archiveSource, serializeForArchive(messages.slice(offset, cut), { personaPaths: this.personaPaths() }), this.budget);
     const archive = await buildArchiveMessage(source, this.budget);
+    if (accept) {
+      // what the request would shrink by: the retired messages (and the old archive message) are replaced by the new archive
+      const saved = estimateMessagesTokens(messages.slice(0, cut)) - estimateMessageTokens(archive);
+      if (!accept(saved)) return undefined;
+    }
 
     const throughSeq = this.seqs[cut - offset - 1]!;
     this.setTranscript([archive, ...messages.slice(cut)]);
@@ -365,7 +402,7 @@ export class PiConversation implements Conversation {
     const after = estimateContextTokens(session.systemPrompt, state.messages);
     this.log.success(`group ${groupId}: compacted ${cut - offset} message(s) into the archive (~${tokens} -> ~${after} tokens)`);
     this.emit("compact.done", { reason, archived_messages: cut - offset, kept_messages: messages.length - cut, tokens_before: tokens, tokens_after: after, archive_chars: source.length, through_seq: throughSeq, ms: Date.now() - t0 });
-    this.emit("conv.state", { from: wasFlushed ? "flushed" : "fresh", to: "fresh", reason: reason === "manual" ? "manual compaction" : "compaction" });
+    this.emit("conv.state", { from: wasFlushed ? "flushed" : "fresh", to: "fresh", reason: reason === "manual" ? "manual compaction" : reason === "cache expired" ? "compaction after cache expiry" : "compaction" });
     return { archived: cut - offset, tokensBefore: tokens, tokensAfter: after };
   }
 
