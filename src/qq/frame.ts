@@ -1,5 +1,5 @@
 import type { Frame } from "../types.js";
-import { apiResponseSchema, eventHeadSchema, groupMessageEventSchema, lifecycleEventSchema } from "./schemas.js";
+import { apiResponseSchema, eventHeadSchema, groupMessageEventSchema, lifecycleEventSchema, pokeEventSchema } from "./schemas.js";
 
 const summarize = (issues: readonly { path: PropertyKey[]; message: string }[]) =>
   issues
@@ -27,7 +27,7 @@ export function parseFrame(raw: string): Frame {
 
   const head = eventHeadSchema.safeParse(json);
   if (!head.success) return { kind: "invalid", reason: `unrecognised frame: ${summarize(head.error.issues)}` };
-  const { post_type, message_type, meta_event_type } = head.data;
+  const { post_type, message_type, meta_event_type, notice_type, sub_type, group_id } = head.data;
 
   if ((post_type === "message" || post_type === "message_sent") && message_type === "group") {
     const r = groupMessageEventSchema.safeParse(json);
@@ -37,6 +37,10 @@ export function parseFrame(raw: string): Frame {
     const r = lifecycleEventSchema.safeParse(json);
     return r.success ? { kind: "lifecycle", selfId: r.data.self_id, subType: r.data.sub_type } : { kind: "invalid", reason: `lifecycle: ${summarize(r.error.issues)}` };
   }
-  // heartbeat, notice, request, private messages: not used by the bot.
+  if (post_type === "notice" && notice_type === "notify" && sub_type === "poke" && group_id !== undefined) {
+    const r = pokeEventSchema.safeParse(json);
+    return r.success ? { kind: "group_poke", event: r.data } : { kind: "invalid", reason: `group poke: ${summarize(r.error.issues)}` };
+  }
+  // heartbeat, other notices, request, private messages (and private pokes): not used by the bot.
   return { kind: "ignored" };
 }

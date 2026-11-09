@@ -1,4 +1,4 @@
-import type { GroupMessage, GroupMessageEvent, Segment } from "../types.js";
+import type { GroupMessage, GroupMessageEvent, PokeEvent, Segment } from "../types.js";
 
 function segmentText(seg: Segment): string {
   switch (seg.type) {
@@ -55,5 +55,27 @@ export function toGroupMessage(e: GroupMessageEvent): GroupMessage | null {
     mentionsSelf: e.message.some((s) => s.type === "at" && s.data.qq === e.self_id),
     replyToMessageId: reply?.type === "reply" ? reply.data.id : undefined,
     ...(images.length > 0 ? { images } : {}),
+  };
+}
+
+/**
+ * A poke aimed at the bot -> a message from the poker that addresses the bot, so it is stored and answered like any other.
+ * The notice carries no nickname, so the poker is named by QQ number. Pokes at someone else, and the bot's own pokes, give null.
+ * The id is synthetic (poke + second + poker): a redelivered notice is a duplicate, as with real messages.
+ */
+export function toPokeMessage(e: PokeEvent): GroupMessage | null {
+  if (e.user_id === e.self_id) return null;
+  if (e.target_id != null && e.target_id !== e.self_id) return null;
+  return {
+    platform: "qq",
+    groupId: e.group_id,
+    messageId: `poke-${e.time}-${e.user_id}`,
+    userId: e.user_id,
+    nickname: e.user_id,
+    ts: e.time,
+    text: "[戳一戳] 戳了你一下",
+    selfId: e.self_id,
+    isSelf: false,
+    mentionsSelf: true,
   };
 }

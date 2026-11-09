@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { toGroupMessage } from "../src/qq/convert.js";
+import { toGroupMessage, toPokeMessage } from "../src/qq/convert.js";
 import { parseFrame } from "../src/qq/frame.js";
 import type { GroupMessage } from "../src/types.js";
 
@@ -66,5 +66,34 @@ describe("toGroupMessage", () => {
   it("returns null when there is no text at all", () => {
     expect(convert({ message: [{ type: "reply", data: { id: "1" } }] })).toBeNull();
     expect(convert({ message: [text("   ")] })).toBeNull();
+  });
+});
+
+describe("group pokes", () => {
+  const poke = (over: Record<string, unknown>) =>
+    parseFrame(JSON.stringify({ post_type: "notice", notice_type: "notify", sub_type: "poke", self_id: 10001, time: 1_700_000_000, group_id: 100, user_id: 42, target_id: 10001, ...over }));
+  const msg = (over: Record<string, unknown>) => {
+    const f = poke(over);
+    if (f.kind !== "group_poke") throw new Error(`not a poke: ${f.kind}`);
+    return toPokeMessage(f.event);
+  };
+
+  it("a poke at the bot becomes an addressed message from the poker, with a stable id", () => {
+    const m = msg({});
+    expect(m).toMatchObject({ groupId: "100", userId: "42", selfId: "10001", mentionsSelf: true, isSelf: false, text: "[戳一戳] 戳了你一下" });
+    expect(m?.messageId).toBe(msg({})?.messageId);
+    expect(m?.messageId).not.toBe(msg({ user_id: 43 })?.messageId);
+  });
+
+  it("target_id missing or null (some OneBot implementations) still means the bot", () => {
+    expect(msg({ target_id: undefined })).not.toBeNull();
+    expect(msg({ target_id: null })).not.toBeNull();
+  });
+
+  it("pokes at someone else and the bot's own pokes give nothing; private pokes are ignored by the parser", () => {
+    expect(msg({ target_id: 77 })).toBeNull();
+    expect(msg({ user_id: 10001, target_id: 77 })).toBeNull();
+    expect(msg({ user_id: 10001 })).toBeNull();
+    expect(poke({ group_id: undefined }).kind).toBe("ignored");
   });
 });

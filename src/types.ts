@@ -17,6 +17,7 @@ import type { z } from "zod";
 import type {
   apiResponseSchema,
   groupMessageEventSchema,
+  pokeEventSchema,
   outboundSegmentSchema,
   segmentSchema,
 } from "./qq/schemas.js";
@@ -155,12 +156,14 @@ export interface AgentDeps {
 export type Segment = z.output<typeof segmentSchema>;
 export type OutboundSegment = z.input<typeof outboundSegmentSchema>;
 export type GroupMessageEvent = z.output<typeof groupMessageEventSchema>;
+export type PokeEvent = z.output<typeof pokeEventSchema>;
 export type ApiResponse = z.output<typeof apiResponseSchema>;
 export type Config = z.output<typeof configSchema>;
 
 /** Result of validating one raw WebSocket frame. Only `group_message` carries chat content. */
 export type Frame =
   | { kind: "group_message"; event: GroupMessageEvent }
+  | { kind: "group_poke"; event: PokeEvent }
   | { kind: "api_response"; response: ApiResponse }
   | { kind: "lifecycle"; selfId: string; subType: string }
   | { kind: "ignored" }

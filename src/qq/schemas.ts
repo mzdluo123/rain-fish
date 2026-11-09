@@ -110,6 +110,24 @@ export const eventHeadSchema = z.object({
   post_type: z.string(),
   message_type: z.string().optional(),
   meta_event_type: z.string().optional(),
+  notice_type: z.string().optional(),
+  sub_type: z.string().optional(),
+  group_id: z.unknown().optional(), // only to tell group notices from private ones
+});
+
+/**
+ * A poke ("戳一戳") in a group: `user_id` pokes `target_id`. Some OneBot implementations leave `target_id` out (or null) when the
+ * poked one is the bot itself, so it is optional here and read as "the bot" by `toPokeMessage`.
+ */
+export const pokeEventSchema = z.object({
+  post_type: z.literal("notice"),
+  notice_type: z.literal("notify"),
+  sub_type: z.literal("poke"),
+  self_id: idSchema,
+  time: z.number().int().nonnegative(),
+  group_id: idSchema,
+  user_id: idSchema,
+  target_id: idSchema.nullish(),
 });
 
 // ---- API request / response ------------------------------------------------------

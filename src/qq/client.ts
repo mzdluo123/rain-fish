@@ -1,7 +1,7 @@
 import { noopLogger } from "../logger.js";
 import type { ApiResponse, GroupHistoryPage, GroupMessage, EventLog, Logger, OneBotClientOptions, OutboundSegment, PendingRequest, QQApi, QQHistoryApi } from "../types.js";
 import { noopEventLog } from "../trace/event-log.js";
-import { toGroupMessage } from "./convert.js";
+import { toGroupMessage, toPokeMessage } from "./convert.js";
 import { parseFrame } from "./frame.js";
 import {
   getGroupListDataSchema,
@@ -150,6 +150,13 @@ export class OneBotClient implements QQApi, QQHistoryApi {
         const msg = toGroupMessage(frame.event);
         if (!msg) return;
         // Not awaited: a slow handler (an LLM call) must not stall the socket.
+        (async () => this.opts.onGroupMessage(msg))().catch((err) => this.log.error(`handler error: ${errText(err)}`));
+        return;
+      }
+      case "group_poke": {
+        this.selfId = frame.event.self_id;
+        const msg = toPokeMessage(frame.event);
+        if (!msg) return;
         (async () => this.opts.onGroupMessage(msg))().catch((err) => this.log.error(`handler error: ${errText(err)}`));
         return;
       }
