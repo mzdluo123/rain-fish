@@ -6,18 +6,42 @@ import { checkTransferSizes, remoteFilePath } from "../src/colab/files.js";
 import { buildPayload, parseResult } from "../src/colab/payload.js";
 
 /** Exercise the actual payload with fixture scripts. Only privileged user setup/cleanup is stubbed;
- * file transfer, child execution, output collection, limits and symlink guards run unchanged. */
-function runFixture(source: string, outputs = ["nested/out.bin"], inputs = [{ path: "data/in.bin", base64: Buffer.from([0, 255, 128, 10]).toString("base64") }]) {
+ * process cleanup (scoped to fixture children), file transfer and output collection run unchanged. */
+function runFixture(source: string, outputs = ["nested/out.bin"], inputs = [{ path: "data/in.bin", base64: Buffer.from([0, 255, 128, 10]).toString("base64") }], timeoutSeconds = 5, leaveZombie = true) {
   const root = mkdtempSync(path.join(os.tmpdir(), "colab-files-"));
   try {
-    let code = buildPayload({ name: "main.py", source, inputFiles: inputs, outputFiles: outputs, args: [], env: {}, timeoutSeconds: 5, maxBytes: 100, marker: "@@M@@" });
+    let code = buildPayload({ name: "main.py", source, inputFiles: inputs, outputFiles: outputs, args: [], env: {}, timeoutSeconds, maxBytes: 100, marker: "@@M@@" });
     code = code.replace('    res = {}', `    a["root"] = ${JSON.stringify(root)}\n    res = {}`)
       .replace('if os.geteuid() != 0:', 'if False:')
       .replaceAll('pwd.getpwnam(a["user"])', 'pwd.getpwuid(os.getuid())')
-      .replace(/ {4}def kill_all\(uid\):[\s\S]*? {4}try:\n {8}if False:/, '    def kill_all(uid):\n        return True\n\n    def remove_owned(uid):\n        pass\n\n    try:\n        if False:')
+      // Keep real process cleanup, but restrict /proc scans to children launched by this fixture.
+      .replace('if not pid.isdigit():', 'if not pid.isdigit() or int(pid) not in fixture_pids:')
+      .replace(/ {4}def remove_owned\(uid\):[\s\S]*? {4}try:\n {8}if False:/, '    def remove_owned(uid):\n        pass\n\n    try:\n        if False:')
       .replaceAll('os.chown(', 'ignore_chown(')
       .replace(', user=uid, group=gid, extra_groups=[]', '');
-    const r = Bun.spawnSync(["python3", "-"], { stdin: Buffer.from("ignore_chown = lambda *args: None\n" + code) });
+    const r = Bun.spawnSync(["python3", "-"], { stdin: Buffer.from(`import subprocess
+fixture_pids = set()
+fixture_popen = subprocess.Popen
+# Leave an exited child unreaped: cleanup must ignore it without relying on init to reap it.
+import time
+fixture_zombie = None
+if ${leaveZombie ? "True" : "False"}:
+    fixture_zombie = fixture_popen(["python3", "-c", "pass"])
+    fixture_pids.add(fixture_zombie.pid)
+    for _ in range(100):
+        with open(f"/proc/{fixture_zombie.pid}/status") as f:
+            if any(line.startswith("State:") and "Z" in line for line in f):
+                break
+        time.sleep(0.01)
+    else:
+        raise RuntimeError("fixture child did not become a zombie")
+def tracked_popen(*args, **kwargs):
+    proc = fixture_popen(*args, **kwargs)
+    fixture_pids.add(proc.pid)
+    return proc
+subprocess.Popen = tracked_popen
+ignore_chown = lambda *args: None
+` + code + "\nif fixture_zombie is not None:\n    fixture_zombie.wait()\n") });
     expect(r.exitCode).toBe(0);
     const result = parseResult(r.stdout.toString(), "@@M@@");
     if (!result || !("ok" in result)) throw new Error(JSON.stringify(result) + r.stderr.toString());
@@ -28,6 +52,15 @@ function runFixture(source: string, outputs = ["nested/out.bin"], inputs = [{ pa
 }
 
 describe("Colab file transfer", () => {
+  it.skipIf(process.getuid?.() === 0 || Bun.which("python3") === null)("preserves timeout status and captured output with real process cleanup", () => {
+    const r = runFixture("import sys, time\nprint('before timeout', flush=True)\nprint('error before timeout', file=sys.stderr, flush=True)\ntime.sleep(30)", [], [], 1, false);
+    expect(r.timedOut).toBe(true);
+    expect(r.exitCode).toBe(-9);
+    expect(r.stdout.head).toContain("before timeout");
+    expect(r.stderr.head).toContain("error before timeout");
+    expect(r.files).toBeUndefined();
+  });
+
   it("rejects absolute paths, traversal, ambiguous paths and NULs", () => {
     for (const p of ["/etc/passwd", "../x", "a/../b", "a//b", "a/./b", "a\\b", "x\0", ""]) expect(() => remoteFilePath(p)).toThrow(/EINVAL/);
     expect(remoteFilePath("data/中文.csv")).toBe("data/中文.csv");

@@ -35,7 +35,8 @@ export function buildPayload(a: { inputFiles?: readonly PythonTransferFile[]; ou
     uid = None
 
     def kill_all(uid):
-        # Every process of the run user, wherever it went (setsid, double fork): SIGKILL until none is left (bounded).
+        # Kill every live process of the run user, including detached children (bounded).
+        # Zombies cannot execute or hold files; only their parent can reap them.
         for _ in range(100):
             found = False
             for pid in os.listdir("/proc"):
@@ -43,7 +44,11 @@ export function buildPayload(a: { inputFiles?: readonly PythonTransferFile[]; ou
                     continue
                 try:
                     with open("/proc/" + pid + "/status", encoding="utf-8") as f:
-                        uids = next((l.split()[1:] for l in f if l.startswith("Uid:")), [])
+                        status = f.readlines()
+                    uids = next((l.split()[1:] for l in status if l.startswith("Uid:")), [])
+                    state = next((l.split()[1] for l in status if l.startswith("State:")), "")
+                    if state in ("Z", "X"):
+                        continue
                 except OSError:
                     continue
                 if str(uid) in uids:
@@ -126,9 +131,9 @@ export function buildPayload(a: { inputFiles?: readonly PythonTransferFile[]; ou
                 os.killpg(proc.pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
                 pass
+            proc.wait()  # reap the main process before scanning for surviving children
             if not kill_all(uid):  # no process may race output collection
                 raise RuntimeError("processes of the run could not be killed")
-            proc.wait()
         res.update(exit_code=proc.returncode, timed_out=timed_out, duration_ms=int((time.monotonic() - t0) * 1000))
         # Processes are dead before collection. Walk with dir fds and O_NOFOLLOW so no
         # symlink (including an intermediate directory) can expose kernel files.
