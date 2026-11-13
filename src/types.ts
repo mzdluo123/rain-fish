@@ -162,6 +162,9 @@ export interface PythonRunRequest {
   /** File name on the remote side (the VFS basename, ends in `.py`). */
   name: string;
   source: string;
+  /** Binary inputs and explicit output paths, relative to the fresh sandbox directory. */
+  inputFiles?: readonly PythonTransferFile[];
+  outputFiles?: readonly string[];
   /** Command-line arguments of the script (`sys.argv[1:]`). */
   args: readonly string[];
   /** Wall-clock limit of the script; it is killed (with everything it started) when it runs out. */
@@ -182,6 +185,11 @@ export interface StreamOutput {
   bytes: number;
 }
 
+export interface PythonTransferFile {
+  path: string;
+  base64: string;
+}
+
 export interface PythonRunResult {
   /** Exit status; negative = killed by that signal (a timed-out script is SIGKILLed: -9). */
   exitCode: number;
@@ -189,6 +197,8 @@ export interface PythonRunResult {
   durationMs: number;
   stdout: StreamOutput;
   stderr: StreamOutput;
+  files?: PythonTransferFile[];
+  fileError?: string;
 }
 
 export type RunPythonFn = (req: PythonRunRequest) => Promise<PythonRunResult>;

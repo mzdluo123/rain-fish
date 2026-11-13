@@ -66,6 +66,14 @@ jq -c 'select(.ev=="run.end" and .ok==false)' data/logs/agent.jsonl             
 ## How it is locked down
 - `src/agent.ts`: tool allowlist `read, write, edit, ls, find, grep, search_messages, view_image, send, send_image, stop` (+ `run_python` if `COLAB_ENABLED`). Built-in `bash` is never enabled; extensions, skills, prompt templates and context files are off; startup aborts if any other tool is active. `send` / `send_image` only post to the conversation's own group through the bot (text, or a stored picture by id).
 - `run_python` runs one VFS `.py` file on a Colab CPU runtime, never on this host: the `colab` CLI gets a fixed argv (no shell), the script runs as the unprivileged user `rainfish-run`, and every process and temp file of that user is removed before and after each run (a kernel that is not root refuses to run). `TAVILY_API_KEY` is readable by the scripts; it is only masked in the output in its plain, reversed and base64 forms, so use a key with a limited quota.
+- **VFS ↔ Colab files.** `run_python` accepts `input_files: [{vfs_path, sandbox_path}]` and `output_files: [{sandbox_path, vfs_path}]`. Only selected inputs are uploaded (binary-safe Base64); sandbox paths are relative to the fresh working directory and cannot contain `.` or `..`. Outputs are collected before cleanup only on exit 0 without timeout, and saved atomically to **new files under `/artifacts/`**. These generated artifacts may have any extension and are subject to VFS quotas; ordinary `write`/`edit` restrictions still apply. Existing files are never overwritten, even if created while the run was in progress. Missing outputs, symlinks (including parent directories), hard links, non-regular files and oversized transfers fail without saving any outputs. Each direction allows at most 32 files, 1 MiB per file, 4 MiB total. File bytes stay out of the model context; the result lists saved paths and sizes. Export artifacts with `bun run fs export /artifacts ./artifacts`.
+
+  Example (after writing `/scripts/process.py` and importing `/data/input.csv`):
+  ```json
+  {"path":"/scripts/process.py","input_files":[{"vfs_path":"/data/input.csv","sandbox_path":"input.csv"}],"output_files":[{"sandbox_path":"result.csv","vfs_path":"/artifacts/result-1.csv"}]}
+  ```
+  The script reads `input.csv` and writes `result.csv` in its working directory. Include helper modules explicitly in `input_files` when needed.
+
 - File tools are backed by `VirtualFs`, not the host disk. Pi's built-in `find`/`grep` (which shell out to `fd`/`rg`) are replaced by database-backed versions.
 - Pi sessions are in memory; the conversation is rebuilt from the database on start.
 

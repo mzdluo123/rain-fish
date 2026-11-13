@@ -143,7 +143,7 @@ export class ColabRunner {
 
   private async exec(req: PythonRunRequest): Promise<{ ok: true; result: PythonRunResult } | { ok: false; detail: string }> {
     const marker = `__rain_fish_result_${randomUUID()}__`;
-    const code = buildPayload({ name: req.name, source: req.source, args: req.args, env: this.o.config.env, timeoutSeconds: req.timeoutSeconds, maxBytes: req.maxOutputBytes ?? this.o.config.outputMaxBytes, marker });
+    const code = buildPayload({ name: req.name, source: req.source, inputFiles: req.inputFiles, outputFiles: req.outputFiles, args: req.args, env: this.o.config.env, timeoutSeconds: req.timeoutSeconds, maxBytes: req.maxOutputBytes ?? this.o.config.outputMaxBytes, marker });
     const started = this.now();
     // `--timeout` of `colab exec` is an idle limit (seconds without output); the launcher prints only at the end.
     const idle = req.timeoutSeconds + EXEC_GRACE_SECONDS;
@@ -185,7 +185,7 @@ export class ColabRunner {
   private mask(r: PythonRunResult): PythonRunResult {
     if (this.secrets.length === 0) return r;
     const hide = (s: string) => this.hide(s);
-    return { ...r, stdout: { ...r.stdout, head: hide(r.stdout.head), tail: hide(r.stdout.tail) }, stderr: { ...r.stderr, head: hide(r.stderr.head), tail: hide(r.stderr.tail) } };
+    return { ...r, ...(r.fileError ? { fileError: hide(r.fileError) } : {}), stdout: { ...r.stdout, head: hide(r.stdout.head), tail: hide(r.stdout.tail) }, stderr: { ...r.stderr, head: hide(r.stderr.head), tail: hide(r.stderr.tail) } };
   }
 
   private async ensureReady(): Promise<void> {
