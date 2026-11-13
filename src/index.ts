@@ -11,7 +11,7 @@ const makeConversation = await orExit(logger, () =>
   createPiConversationFactory(db, config, logger, async (_groupId, text) => {
     process.stdout.write(`\n[send] ${text}\n`);
   }, async (_groupId, imageId, text) => {
-    process.stdout.write(`\n[send_image] i${imageId}${text ? ` ${text}` : ""}\n`);
+    process.stdout.write(`\n[send_image] ${typeof imageId === "number" ? `i${imageId}` : `artifact (${imageId.data.length} bytes)`}${text ? ` ${text}` : ""}\n`);
   }, events),
 );
 const conversation = await makeConversation("cli");

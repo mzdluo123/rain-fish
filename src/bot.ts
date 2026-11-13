@@ -1,6 +1,6 @@
 import { noopLogger } from "./logger.js";
 import { noopEventLog, preview } from "./trace/event-log.js";
-import type { BotOptions, EventLog, GroupMessage, Logger, OutboundSegment } from "./types.js";
+import type { BotOptions, EventLog, GroupMessage, ImageSendSource, Logger, OutboundSegment } from "./types.js";
 
 /** QQ rejects very long messages; stay well under the limit. */
 export const MAX_REPLY_CHARS = 1500;
@@ -98,12 +98,13 @@ export class Bot {
   }
 
   /**
-   * Posts the stored picture `imageId` (plus `text` in the same message), quoting `replyTo`. Only pictures this group has seen can be
-   * sent. The message is stored like `sendText`'s, linked to the picture so it can be found again.
+   * Posts a group-scoped picture id or validated artifact bytes (plus text), quoting `replyTo`.
+   * The sent message is stored and linked to the picture so it can be found again.
    */
-  async sendImage(groupId: string, imageId: number, text?: string, replyTo?: string): Promise<void> {
+  async sendImage(groupId: string, source: ImageSendSource, text?: string, replyTo?: string): Promise<void> {
     replyTo = this.quotable(replyTo);
-    const img = this.opts.images?.get(groupId, imageId);
+    const imageId = typeof source === "number" ? source : undefined;
+    const img = typeof source === "number" ? this.opts.images?.get(groupId, source) : { ...source, size: source.data.length };
     if (!img) throw new Error(`No picture i${imageId} in this group's history (unknown id, or deleted to make room).`);
     const caption = text?.trim();
     const segments: OutboundSegment[] = [{ type: "image", data: { file: `base64://${img.data.toString("base64")}` } }];
@@ -114,16 +115,20 @@ export class Bot {
       ({ messageId } = await this.opts.api.sendGroupMessage(groupId, segments));
     } catch (err) {
       this.events.emit("msg.out_failed", { group: groupId, chunk: 0, chunks: 1, chars: caption?.length ?? 0, image_id: imageId, error: err });
-      throw new Error(`send of picture i${imageId} to group ${groupId} failed: ${errText(err)}`);
+      throw new Error(`send of picture ${imageId === undefined ? "artifact" : `i${imageId}`} to group ${groupId} failed: ${errText(err)}`);
     }
     this.events.emit("msg.out", { group: groupId, message_id: messageId, chunk: 0, chunks: 1, chars: caption?.length ?? 0, image_id: imageId, bytes: img.size, reply_to: replyTo, stored: this.selfId !== undefined, text: preview(this.events, caption ?? "") });
     if (this.selfId) {
       this.opts.store.insert({ platform: "qq", groupId, messageId, userId: this.selfId, nickname: "bot", ts: Math.floor(Date.now() / 1000), text: caption ? `[图片]${caption}` : "[图片]" });
-      this.opts.images?.link(groupId, messageId, 0, imageId);
+      if (typeof source === "number") this.opts.images?.link(groupId, messageId, 0, source);
+      else {
+        this.opts.images?.put(groupId, messageId, 0, source.data, source.mime);
+        if (this.opts.imageStoreMaxBytes !== undefined) this.opts.images?.evict(this.opts.imageStoreMaxBytes);
+      }
     } else {
       this.log.warn(`own id unknown yet: message ${messageId} in group ${groupId} not stored`);
     }
-    this.log.success(`sent picture i${imageId} to group ${groupId}`);
+    this.log.success(`sent picture ${imageId === undefined ? "artifact" : `i${imageId}`} to group ${groupId}`);
   }
 
   private isAddressedToBot(msg: GroupMessage): boolean {

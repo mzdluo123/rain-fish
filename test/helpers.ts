@@ -3,7 +3,7 @@ import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { Logger } from "../src/types.js";
+import type { ImageSendSource, Logger } from "../src/types.js";
 import { openDb } from "../src/db/open.js";
 import { MessageStore } from "../src/store.js";
 import { ImageStore } from "../src/image-store.js";
@@ -21,8 +21,8 @@ export function makeEnv(systemPrompt = "# Persona\nYou are TESTBOT.", sendError?
     if (sendError) throw new Error(sendError);
     sent.push({ text, replyTo });
   };
-  const sentImages: { imageId: number; text?: string; replyTo?: string }[] = [];
-  const sendImage = async (imageId: number, text?: string, replyTo?: string) => {
+  const sentImages: { imageId: ImageSendSource; text?: string; replyTo?: string }[] = [];
+  const sendImage = async (imageId: ImageSendSource, text?: string, replyTo?: string) => {
     if (sendError) throw new Error(sendError);
     sentImages.push({ imageId, text, replyTo });
   };

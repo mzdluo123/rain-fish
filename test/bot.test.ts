@@ -155,12 +155,12 @@ describe("splitReply", () => {
 
 describe("Bot pictures", () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
-  function withImages() {
+  function withImages(imageStoreMaxBytes?: number) {
     const s = setup();
     const db = openDb(":memory:");
     const images = new ImageStore(db);
     const captured: GroupMessage[] = [];
-    const bot = new Bot({ store: new MessageStore(db), images, pictures: { capture: async (m) => (captured.push(m), []), image: async () => undefined }, responder: { notify() {} }, api: { sendGroupMessage: async (groupId, message) => (s.sent.push({ groupId, message }), { messageId: "9001" }) }, events: s.trace.events });
+    const bot = new Bot({ store: new MessageStore(db), images, imageStoreMaxBytes, pictures: { capture: async (m) => (captured.push(m), []), image: async () => undefined }, responder: { notify() {} }, api: { sendGroupMessage: async (groupId, message) => (s.sent.push({ groupId, message }), { messageId: "9001" }) }, events: s.trace.events });
     bot.noteSelfId(SELF);
     return { ...s, bot, images, captured, store: new MessageStore(db), db };
   }
@@ -185,6 +185,40 @@ describe("Bot pictures", () => {
     const row = new MessageStore(db).get("qq", "100", "9001");
     expect(row?.text).toBe("[图片]给你");
     expect(images.idsOf("100", "9001")).toEqual([id]);
+  });
+
+  it("sends artifact bytes inline, then makes the picture searchable and reusable only in the receiving group", async () => {
+    const { bot, images, sent, store } = withImages();
+    await bot.sendImage("100", { data: png, mime: "image/png" }, "chart", "55");
+    expect(sent[0]!.message).toEqual([
+      { type: "reply", data: { id: "55" } },
+      { type: "image", data: { file: `base64://${png.toString("base64")}` } },
+      { type: "text", data: { text: "chart" } },
+    ]);
+    const [id] = images.idsOf("100", "9001");
+    expect(id).toBeNumber();
+    expect(images.get("100", id!)?.data).toEqual(png);
+    expect(images.get("200", id!)).toBeUndefined();
+    expect(store.get("qq", "100", "9001")?.text).toBe("[图片]chart");
+    await bot.sendImage("100", id!);
+    expect(sent).toHaveLength(2);
+  });
+
+  it("honors the picture retention cap for artifacts, including disabled retention", async () => {
+    const { bot, images, store } = withImages(0);
+    await bot.sendImage("100", { data: png, mime: "image/png" });
+    expect(images.totalBytes()).toBe(0);
+    expect(images.idsOf("100", "9001")).toEqual([]);
+    expect(store.get("qq", "100", "9001")).toBeDefined();
+  });
+
+  it("does not store an artifact picture or message when the API rejects delivery", async () => {
+    const { images, store } = withImages();
+    const bot = new Bot({ images, store, responder: { notify() {} }, api: { sendGroupMessage: async () => { throw new Error("offline"); } } });
+    bot.noteSelfId(SELF);
+    await expect(bot.sendImage("100", { data: png, mime: "image/png" })).rejects.toThrow(/offline/);
+    expect(images.totalBytes()).toBe(0);
+    expect(store.get("qq", "100", "9001")).toBeUndefined();
   });
 
   it("sendImage refuses a picture this group never saw, without calling the API", async () => {

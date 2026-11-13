@@ -78,7 +78,7 @@ const client = new OneBotClient({
   },
   logger,
 });
-bot = new Bot({ store, images: imageStore, pictures, responder, api: client, groups: config.groups, logger, events });
+bot = new Bot({ store, images: imageStore, imageStoreMaxBytes: config.images.storeMaxBytes, pictures, responder, api: client, groups: config.groups, logger, events });
 
 events.emit("proc.start", {
   entry: "bot",

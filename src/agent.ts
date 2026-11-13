@@ -83,7 +83,7 @@ export async function createAgent({ systemPrompt, fs, store, groupId, send, send
       createSearchMessagesTool(store, groupId, images),
       createViewImageTool(images, groupId, () => canReadImages(current?.model), modelImage),
       createSendTool(send, budget),
-      createSendImageTool(sendImage, budget),
+      createSendImageTool(sendImage, budget, fs),
       createStopTool(),
       ...(python ? [createRunPythonTool(fs, python)] : []),
       // Pi's per-tool generics are invariant in renderCall; the array type is the SDK's erased form.

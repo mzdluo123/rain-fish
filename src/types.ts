@@ -141,7 +141,7 @@ export interface AgentDeps {
   groupId: string;
   /** Posts to this conversation's group; backs the agent's `send` tool. `replyTo` is a message id to quote. Rejects if delivery fails. */
   send: SendFn;
-  /** Posts a stored picture to this conversation's group; backs `send_image`. Rejects if the group never saw that picture or delivery fails. */
+  /** Posts a group-scoped picture or validated VFS artifact bytes; backs `send_image`. */
   sendImage: SendImageFn;
   /** Stored pictures (scoped to `groupId` on every read); backs `view_image` and the picture ids in `search_messages`. */
   images: ImageStore;
@@ -372,10 +372,13 @@ export type BackfillConfig = Config["backfill"];
 export type GroupSender = (groupId: string, text: string, replyTo?: string) => Promise<void>;
 /** `GroupSender` bound to one group. */
 export type SendFn = (text: string, replyTo?: string) => Promise<void>;
-/** Posts the stored picture `imageId` (with optional `text` in the same message) to a group. Rejects if the group never saw it. */
-export type GroupImageSender = (groupId: string, imageId: number, text?: string, replyTo?: string) => Promise<void>;
+/** An existing group-scoped id, or image bytes read from the VFS artifacts directory. */
+export type ImageSendSource = number | { data: Buffer; mime: string };
+
+/** Posts a group-scoped picture id or validated artifact bytes, with optional text. */
+export type GroupImageSender = (groupId: string, imageId: ImageSendSource, text?: string, replyTo?: string) => Promise<void>;
 /** `GroupImageSender` bound to one group. */
-export type SendImageFn = (imageId: number, text?: string, replyTo?: string) => Promise<void>;
+export type SendImageFn = (imageId: ImageSendSource, text?: string, replyTo?: string) => Promise<void>;
 
 /**
  * Receives the messages the agent should eventually see. It does not answer: the agent speaks
@@ -433,6 +436,8 @@ export interface BotOptions {
   store: MessageStore;
   /** Stored pictures: needed to send them (`sendImage`). */
   images?: ImageStore;
+  /** Cap applied after saving a generated picture, including zero to disable retention. */
+  imageStoreMaxBytes?: number;
   /** Picture capture on arrival: every picture of an incoming message is downloaded and stored in the background. */
   pictures?: PictureArchive;
   responder: GroupResponder;

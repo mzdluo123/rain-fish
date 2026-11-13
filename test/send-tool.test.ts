@@ -154,3 +154,47 @@ describe("a run with several messages", () => {
     await expect(t.execute("t", { image_id: "banana" } as never)).rejects.toThrow(/not a picture id/);
   });
 });
+
+
+describe("send_image artifacts", () => {
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jV3sAAAAASUVORK5CYII=", "base64");
+
+  it("reads a VFS artifact, sends original bytes with caption/reply, and shares the message budget", async () => {
+    const env = { ...makeEnv(), budget: new RunBudget(1, 0) };
+    env.fs.writeFile("/artifacts/plot.png", png);
+    const send = await tool(env, "send_image");
+    const r = await send.execute("t", { artifact_path: "/artifacts/plot.png", text: " chart ", reply_to: " 9 " } as never);
+    expect(env.sentImages).toEqual([{ imageId: { data: png, mime: "image/png" }, text: "chart", replyTo: "9" }]);
+    expect(r.details).toEqual({ artifact_path: "/artifacts/plot.png" });
+    await expect(send.execute("t", { artifact_path: "/artifacts/plot.png" } as never)).rejects.toThrow(/at most 1 messages/);
+    expect(env.sentImages).toHaveLength(1);
+  });
+
+  it("rejects ambiguous sources, host/URL paths, escapes, directories, missing files and non-images before sending", async () => {
+    const env = makeEnv();
+    env.fs.writeFile("/other.png", png);
+    env.fs.writeFile("/artifacts/fake.png", "not a picture");
+    env.fs.mkdir("/artifacts/subdir");
+    const send = await tool(env, "send_image");
+    for (const args of [
+      {}, { image_id: "i1", artifact_path: "/artifacts/fake.png" },
+      ...["/etc/passwd", "https://example.com/a.png", "artifacts/fake.png", "/artifacts/../other.png", "/artifacts/missing.png", "/artifacts", "/artifacts/subdir", "/artifacts/fake.png", "/artifacts/x\0"].map(artifact_path => ({ artifact_path })),
+    ]) await expect(send.execute("t", args as never)).rejects.toThrow();
+    expect(env.sentImages).toHaveLength(0);
+    expect(env.budget.used).toBe(0);
+  });
+
+  it("rejects oversized images and keeps failed deliveries outside the budget", async () => {
+    const env = makeEnv("# Test", "offline");
+    const data = Buffer.alloc(1024 * 1024 + 1);
+    png.copy(data);
+    // Host imports may use higher VFS quotas than agent transfers.
+    const { VirtualFs } = await import("../src/vfs.js");
+    new VirtualFs(env.db, { maxFileBytes: data.length, maxTotalBytes: data.length * 2 }).writeFile("/artifacts/large.png", data);
+    const send = await tool(env, "send_image");
+    await expect(send.execute("t", { artifact_path: "/artifacts/large.png" } as never)).rejects.toThrow(/1 MiB/);
+    env.fs.writeFile("/artifacts/ok.png", png);
+    await expect(send.execute("t", { artifact_path: "/artifacts/ok.png" } as never)).rejects.toThrow(/offline/);
+    expect(env.budget.used).toBe(0);
+  });
+});
