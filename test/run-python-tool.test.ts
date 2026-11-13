@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { createAgent } from "../src/agent.js";
+import { VirtualFs } from "../src/vfs.js";
 import { PythonRunCount } from "../src/tools/run-python.js";
 import type { PythonRunRequest, PythonRunResult, PythonTool } from "../src/types.js";
 import { makeEnv } from "./helpers.js";
@@ -95,4 +96,63 @@ describe("run_python", () => {
     expect(await check(["edit", "run_python"])).toMatchObject({ block: true, reason: expect.stringContaining("`edit`") });
     expect((await check(["read", "run_python"]))?.block).toBeFalsy();
   });
+});
+
+
+describe("run_python file mappings", () => {
+  it("uploads only named VFS inputs and saves binary outputs without returning their contents", async () => {
+    const t = await setup(result({ files: [{ path: "out.bin", base64: "AP8=" }] }));
+    t.env.fs.writeFile("/main.py", "");
+    t.env.fs.writeFile("/input.bin", new Uint8Array([0, 255]));
+    const text = await t.run({ path: "/main.py", input_files: [{ vfs_path: "/input.bin", sandbox_path: "data/input.bin" }], output_files: [{ sandbox_path: "out.bin", vfs_path: "/artifacts/out.bin" }] });
+    expect(t.requests[0]).toMatchObject({ inputFiles: [{ path: "data/input.bin", base64: "AP8=" }], outputFiles: ["out.bin"] });
+    expect(t.env.fs.readFile("/artifacts/out.bin")).toEqual(Buffer.from([0, 255]));
+    expect(text).toContain("/artifacts/out.bin");
+    expect(text).not.toContain("AP8=");
+  });
+
+  it("rejects host paths, traversal, duplicate mappings, script collisions and existing destinations before running", async () => {
+    const t = await setup();
+    t.env.fs.writeFile("/a.py", "");
+    t.env.fs.writeFile("/artifacts/existing", "old");
+    for (const args of [
+      { input_files: [{ vfs_path: "/etc/passwd", sandbox_path: "data" }] },
+      { input_files: [{ vfs_path: "/a.py", sandbox_path: "../escape" }] },
+      { input_files: [{ vfs_path: "/a.py", sandbox_path: "a.py" }] },
+      { output_files: [{ vfs_path: "/persona.md", sandbox_path: "out" }] },
+      { output_files: [{ vfs_path: "/artifacts/existing", sandbox_path: "out" }] },
+      { output_files: [{ vfs_path: "/artifacts/x", sandbox_path: "/etc/passwd" }] },
+      { output_files: [{ vfs_path: "/artifacts/x", sandbox_path: "out" }, { vfs_path: "/artifacts/y", sandbox_path: "out" }] },
+    ]) await expect(t.run({ path: "/a.py", ...args })).rejects.toThrow();
+    expect(t.requests).toHaveLength(0);
+    expect(t.python.count.used).toBe(0);
+  });
+
+  it("does not save partial, failed or oversized results", async () => {
+    for (const r of [result({ files: [] }), result({ fileError: "missing output" }), result({ files: [{ path: "out", base64: Buffer.alloc(1024*1024+1).toString("base64") }] })]) {
+      const t = await setup(r);
+      t.env.fs.writeFile("/a.py", "");
+      await expect(t.run({ path: "/a.py", output_files: [{ sandbox_path: "out", vfs_path: "/artifacts/result" }] })).rejects.toThrow();
+      expect(t.env.fs.exists("/artifacts")).toBe(false);
+    }
+    const t = await setup(result({ exitCode: 1, files: [{ path: "out", base64: "eA==" }] }));
+    t.env.fs.writeFile("/a.py", "");
+    await t.run({ path: "/a.py", output_files: [{ sandbox_path: "out", vfs_path: "/artifacts/result" }] });
+    expect(t.env.fs.exists("/artifacts")).toBe(false);
+  });
+
+  it("rolls back the entire VFS batch on a later path conflict", () => {
+    const { fs } = makeEnv();
+    fs.writeFile("/artifacts/existing", "old");
+    expect(() => fs.createFiles([{ path: "/artifacts/new-dir/new", content: Buffer.from("new") }, { path: "/artifacts/existing", content: Buffer.from("replace") }])).toThrow();
+    expect(fs.exists("/artifacts/new-dir")).toBe(false);
+    expect(fs.readText("/artifacts/existing")).toBe("old");
+  });
+  it("rolls back the entire batch when the VFS total quota is exceeded", () => {
+    const env = makeEnv();
+    const fs = new VirtualFs(env.db, { maxFileBytes: 8, maxTotalBytes: 10 });
+    expect(() => fs.createFiles([{ path: "/artifacts/a", content: Buffer.alloc(6) }, { path: "/artifacts/b", content: Buffer.alloc(6) }])).toThrow(/ENOSPC/);
+    expect(fs.exists("/artifacts")).toBe(false);
+  });
+
 });

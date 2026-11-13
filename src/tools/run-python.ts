@@ -1,6 +1,7 @@
 import path from "node:path";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { checkTransferSizes, remoteFilePath, TRANSFER_MAX_FILES } from "../colab/files.js";
 import { PYTHON_OUTPUT_MAX_BYTES } from "../config.js";
 import type { PythonRunResult, PythonTool, StreamOutput } from "../types.js";
 import { VirtualFs } from "../vfs.js";
@@ -53,13 +54,15 @@ export function createRunPythonTool(fs: VirtualFs, python: PythonTool) {
     label: "Run Python",
     description:
       "Run one Python file from your filesystem on a remote Google Colab CPU machine and get its exit code, stdout and stderr. " +
-      "Only this one file is uploaded: it cannot import your other files. It runs as a fresh `python` process in an empty temporary directory that is deleted afterwards; " +
+      "Use input_files [{vfs_path, sandbox_path}] to upload data or modules, and output_files [{sandbox_path, vfs_path}] to save generated files. Sandbox paths are relative to the working directory. Outputs must be new paths under /artifacts/; existing files are never overwritten. Transfers allow 32 files, 1 MiB each, 4 MiB total per direction. Output files are saved atomically only on exit 0 without timeout. The temporary directory is deleted afterwards; " +
       "nothing carries over between runs, and stdin is empty (no input()); pass inputs as command-line arguments (`args`, read with sys.argv[1:]). Common packages (numpy, pandas, ...) are installed and the machine has internet access. " +
       `The first run after a pause also starts the machine and may take a minute or two. Output longer than the limit is cut in the middle (head + tail are kept); ` +
       `if you need more, prefer making the script print only what you need; raise max_output_bytes only when you really need the whole output (it all enters your context). At most ${python.count.max} runs per run of yours.`,
     promptSnippet: "Run a .py file on a remote Colab machine (exit code + output)",
     parameters: Type.Object({
       path: Type.String({ description: "Absolute path of the .py file, e.g. /scripts/calc.py." }),
+      input_files: Type.Optional(Type.Array(Type.Object({ vfs_path: Type.String(), sandbox_path: Type.String() }), { maxItems: TRANSFER_MAX_FILES })),
+      output_files: Type.Optional(Type.Array(Type.Object({ sandbox_path: Type.String(), vfs_path: Type.String() }), { maxItems: TRANSFER_MAX_FILES })),
       args: Type.Optional(Type.Array(Type.String(), { maxItems: PYTHON_MAX_ARGS, description: `Command-line arguments for the script, one string each (sys.argv[1:]); no shell, so quotes and spaces are taken literally. At most ${PYTHON_MAX_ARGS}, ${PYTHON_ARGS_MAX_BYTES} bytes in total.` })),
       timeout_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: python.maxTimeoutSeconds, description: `Wall-clock limit; the script is killed after it. Default ${python.defaultTimeoutSeconds}, at most ${python.maxTimeoutSeconds}.` })),
       max_output_bytes: Type.Optional(Type.Integer({ minimum: 1, maximum: PYTHON_OUTPUT_MAX_BYTES, description: `Bytes of stdout and of stderr returned (each). Default ${python.defaultOutputBytes}, at most ${PYTHON_OUTPUT_MAX_BYTES}.` })),
@@ -79,10 +82,33 @@ export function createRunPythonTool(fs: VirtualFs, python: PythonTool) {
       if (args.reduce((n, a) => n + Buffer.byteLength(a, "utf-8"), 0) > PYTHON_ARGS_MAX_BYTES) throw new Error(`EINVAL: the arguments are over ${PYTHON_ARGS_MAX_BYTES} bytes in total; put large inputs into the script itself.`);
       const timeoutSeconds = Math.min(p.timeout_seconds ?? python.defaultTimeoutSeconds, python.maxTimeoutSeconds);
       const maxOutputBytes = p.max_output_bytes === undefined ? undefined : Math.min(p.max_output_bytes, PYTHON_OUTPUT_MAX_BYTES);
+      const inputs = (p.input_files ?? []).map((f) => ({ path: remoteFilePath(f.sandbox_path), content: fs.readFile(f.vfs_path) }));
+      checkTransferSizes(inputs.map((f) => f.content.byteLength));
+      const outputs = (p.output_files ?? []).map((f) => ({ path: remoteFilePath(f.sandbox_path), dest: VirtualFs.normalize(f.vfs_path) }));
+      checkTransferSizes(outputs.map(() => 0));
+      const remotePaths = [path.posix.basename(file), ...inputs.map((f) => f.path)];
+      if (remotePaths.some((p, i) => remotePaths.some((q, j) => i !== j && (p === q || p.startsWith(q + "/"))))) throw new Error("EINVAL: conflicting sandbox input or script path.");
+      if (new Set(outputs.map((f) => f.path)).size !== outputs.length || new Set(outputs.map((f) => f.dest)).size !== outputs.length) throw new Error("EINVAL: duplicate output path.");
+      for (const f of outputs) {
+        if (!f.dest.startsWith("/artifacts/")) throw new Error("EINVAL: output VFS paths must be under /artifacts/.");
+        if (fs.exists(f.dest)) throw new Error(`EINVAL: output already exists: '${f.dest}'; choose a new path.`);
+      }
       python.count.acquire();
-      const r = await python.run({ name: path.posix.basename(file), source, args, timeoutSeconds, maxOutputBytes, signal, callId: toolCallId });
+      const r = await python.run({ name: path.posix.basename(file), source, ...(inputs.length ? { inputFiles: inputs.map((f) => ({ path: f.path, base64: Buffer.from(f.content).toString("base64") })) } : {}), ...(outputs.length ? { outputFiles: outputs.map((f) => f.path) } : {}), args, timeoutSeconds, maxOutputBytes, signal, callId: toolCallId });
+      const saved: { path: string; content: Uint8Array }[] = [];
+      if (outputs.length && r.exitCode === 0 && !r.timedOut) {
+        if (r.fileError) throw new Error(`Python finished, but no output files were saved: ${r.fileError}`);
+        if (r.files?.length !== outputs.length) throw new Error("Invalid output files from sandbox; nothing was saved.");
+        for (const f of outputs) {
+          const matches = r.files.filter((r) => r.path === f.path);
+          if (matches.length !== 1) throw new Error("Invalid output files from sandbox; nothing was saved.");
+          saved.push({ path: f.dest, content: Buffer.from(matches[0]!.base64, "base64") });
+        }
+        checkTransferSizes(saved.map((f) => f.content.byteLength));
+        fs.createFiles(saved);
+      }
       return {
-        content: [{ type: "text", text: formatRunResult(file, r, timeoutSeconds) }],
+        content: [{ type: "text", text: formatRunResult(file, r, timeoutSeconds) + saved.map((f) => "\n" + element("saved_file", { bytes: String(f.content.byteLength) }, f.path)).join("") }],
         details: { exit_code: r.exitCode, timed_out: r.timedOut, duration_ms: r.durationMs, stdout_bytes: r.stdout.bytes, stderr_bytes: r.stderr.bytes },
       };
     },

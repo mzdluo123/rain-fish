@@ -1,5 +1,6 @@
+import { checkTransferSizes, remoteFilePath, TRANSFER_MAX_FILE_BYTES, TRANSFER_MAX_FILES, TRANSFER_MAX_TOTAL_BYTES } from "./files.js";
 import { z } from "zod";
-import type { PythonRunResult } from "../types.js";
+import type { PythonRunResult, PythonTransferFile } from "../types.js";
 
 /** Remote directory under which every run gets its own temporary working directory (deleted afterwards). */
 export const REMOTE_RUN_ROOT = "/content/rain-fish-runs";
@@ -17,8 +18,14 @@ export const REMOTE_RUN_USER = "rainfish-run";
  * name like `-c` is never a `python` option, and an argument after it belongs to the script. The result is one line
  * `<marker><json>` on the kernel's stdout; the script's own output never reaches that stream.
  */
-export function buildPayload(a: { name: string; source: string; args: readonly string[]; env: Readonly<Record<string, string>>; timeoutSeconds: number; maxBytes: number; marker: string }): string {
-  const packed = Buffer.from(JSON.stringify({ name: a.name, source: a.source, args: a.args, env: a.env, timeout: a.timeoutSeconds, max_bytes: a.maxBytes, marker: a.marker, root: REMOTE_RUN_ROOT, user: REMOTE_RUN_USER }), "utf-8").toString("base64");
+export function buildPayload(a: { inputFiles?: readonly PythonTransferFile[]; outputFiles?: readonly string[]; name: string; source: string; args: readonly string[]; env: Readonly<Record<string, string>>; timeoutSeconds: number; maxBytes: number; marker: string }): string {
+  for (const f of a.inputFiles ?? []) {
+    if (remoteFilePath(f.path) === a.name) throw new Error("EINVAL: input file conflicts with the script.");
+  }
+  for (const p of a.outputFiles ?? []) remoteFilePath(p);
+  checkTransferSizes((a.inputFiles ?? []).map((f) => Buffer.from(f.base64, "base64").length));
+  if ((a.outputFiles?.length ?? 0) > TRANSFER_MAX_FILES) throw new Error("EFBIG: too many output files.");
+  const packed = Buffer.from(JSON.stringify({ name: a.name, source: a.source, input_files: a.inputFiles ?? [], output_files: a.outputFiles ?? [], file_limit: TRANSFER_MAX_FILE_BYTES, total_limit: TRANSFER_MAX_TOTAL_BYTES, args: a.args, env: a.env, timeout: a.timeoutSeconds, max_bytes: a.maxBytes, marker: a.marker, root: REMOTE_RUN_ROOT, user: REMOTE_RUN_USER }), "utf-8").toString("base64");
   return `def __rain_fish_run(packed):
     import base64, json, os, pwd, shutil, signal, stat, subprocess, sys, tempfile, time
     a = json.loads(base64.b64decode(packed).decode("utf-8"))
@@ -94,6 +101,14 @@ export function buildPayload(a: { name: string; source: string; args: readonly s
         script = os.path.join(d, a["name"])
         with open(script, "w", encoding="utf-8") as f:
             f.write(a["source"])
+        for item in a["input_files"]:
+            dest = os.path.join(d, item["path"])
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "xb") as f:
+                f.write(base64.b64decode(item["base64"], validate=True))
+        for top, dirs, files in os.walk(d):
+            for name in dirs + files:
+                os.chown(os.path.join(top, name), uid, gid)
         os.chown(script, uid, gid)
         os.chown(d, uid, gid)
         os.chmod(d, 0o700)
@@ -111,9 +126,39 @@ export function buildPayload(a: { name: string; source: string; args: readonly s
                 os.killpg(proc.pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
                 pass
-            kill_all(uid)  # what the script left running in the background, in any group or session
+            if not kill_all(uid):  # no process may race output collection
+                raise RuntimeError("processes of the run could not be killed")
             proc.wait()
         res.update(exit_code=proc.returncode, timed_out=timed_out, duration_ms=int((time.monotonic() - t0) * 1000))
+        # Processes are dead before collection. Walk with dir fds and O_NOFOLLOW so no
+        # symlink (including an intermediate directory) can expose kernel files.
+        if a["output_files"] and proc.returncode == 0 and not timed_out:
+            collected = []
+            total = 0
+            try:
+                for relative in a["output_files"]:
+                    fd = os.open(d, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                    try:
+                        parts = relative.split("/")
+                        for part in parts[:-1]:
+                            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                            os.close(fd)
+                            fd = child
+                        child = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+                        with os.fdopen(child, "rb") as f:
+                            st = os.fstat(f.fileno())
+                            if not stat.S_ISREG(st.st_mode) or st.st_uid != uid or st.st_nlink != 1:
+                                raise RuntimeError("output must be a regular file owned by the run user, without links")
+                            content = f.read(a["file_limit"] + 1)
+                        total += len(content)
+                        if len(content) > a["file_limit"] or total > a["total_limit"]:
+                            raise RuntimeError("output transfer size limit exceeded")
+                        collected.append({"path": relative, "base64": base64.b64encode(content).decode("ascii")})
+                    finally:
+                        os.close(fd)
+                res["files"] = collected
+            except Exception as e:
+                res["file_error"] = repr(e)
         limit = a["max_bytes"]
         for key, path in paths.items():
             size = os.path.getsize(path)
@@ -144,7 +189,7 @@ del __rain_fish_run
 const streamSchema = z.object({ head: z.string(), tail: z.string(), bytes: z.number().int().nonnegative() });
 const resultSchema = z.union([
   z.object({ error: z.string() }),
-  z.object({ exit_code: z.number().int(), timed_out: z.boolean(), duration_ms: z.number().int().nonnegative(), stdout: streamSchema, stderr: streamSchema }),
+  z.object({ exit_code: z.number().int(), timed_out: z.boolean(), duration_ms: z.number().int().nonnegative(), stdout: streamSchema, stderr: streamSchema, files: z.array(z.object({ path: z.string().max(1024), base64: z.string().max(4 * Math.ceil(TRANSFER_MAX_FILE_BYTES / 3)).regex(/^[A-Za-z0-9+/]*={0,2}$/).refine((s) => Buffer.from(s, "base64").toString("base64") === s) })).max(TRANSFER_MAX_FILES).optional(), file_error: z.string().optional() }),
 ]);
 
 /**
@@ -164,5 +209,5 @@ export function parseResult(stdout: string, marker: string): { ok: PythonRunResu
   if (!r.success) return undefined;
   if ("error" in r.data) return { error: r.data.error };
   const d = r.data;
-  return { ok: { exitCode: d.exit_code, timedOut: d.timed_out, durationMs: d.duration_ms, stdout: d.stdout, stderr: d.stderr } };
+  return { ok: { exitCode: d.exit_code, timedOut: d.timed_out, durationMs: d.duration_ms, stdout: d.stdout, stderr: d.stderr, ...(d.files ? { files: d.files } : {}), ...(d.file_error ? { fileError: d.file_error } : {}) } };
 }

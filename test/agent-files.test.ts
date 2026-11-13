@@ -36,7 +36,7 @@ describe("agent file limits: Markdown only", () => {
   it("accepts .py scripts too, under the same size limit", async () => {
     await call("write", { path: "/scripts/calc.py", content: "print(6*7)\n" });
     expect(env.fs.readText("/scripts/calc.py")).toBe("print(6*7)\n");
-    await expect(call("write", { path: "/scripts/big.py", content: "#".repeat(AGENT_MAX_FILE_BYTES + 1) })).rejects.toThrow(/EFBIG.*run_python uploads only this one file/);
+    await expect(call("write", { path: "/scripts/big.py", content: "#".repeat(AGENT_MAX_FILE_BYTES + 1) })).rejects.toThrow(/EFBIG.*modules uploaded with run_python input_files/);
   });
 });
 

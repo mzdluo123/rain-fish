@@ -101,6 +101,16 @@ export class VirtualFs {
     }).immediate();
   }
 
+  /** Creates a batch atomically, refusing existing paths (including changes made during a remote run). */
+  createFiles(files: readonly { path: string; content: Uint8Array }[]): void {
+    this.db.transaction(() => {
+      for (const file of files) {
+        if (this.exists(file.path)) throw new VfsError("EINVAL", "output already exists; choose a new path", file.path);
+        this.writeFile(file.path, file.content);
+      }
+    }).immediate();
+  }
+
   /** `mkdir -p`: existing directories are fine, a file in the way is ENOTDIR. */
   mkdir(p: string): void {
     const n = VirtualFs.normalize(p);

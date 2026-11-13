@@ -26,7 +26,7 @@ export function assertAgentWritable(p: string, content: string | Uint8Array): vo
     throw new Error(`EFBIG: '${n}' would be ${bytes} bytes, over the ${AGENT_MAX_FILE_BYTES}-byte (10 KB) limit. Nothing was written. Remove or merge rules.`);
   }
   if (bytes > AGENT_MAX_FILE_BYTES && PYTHON_FILE.test(n)) {
-    throw new Error(`EFBIG: '${n}' would be ${bytes} bytes, over the ${AGENT_MAX_FILE_BYTES}-byte (10 KB) limit for one file. Nothing was written. Make the script shorter: run_python uploads only this one file.`);
+    throw new Error(`EFBIG: '${n}' would be ${bytes} bytes, over the ${AGENT_MAX_FILE_BYTES}-byte (10 KB) limit for one file. Nothing was written. Make the script shorter, or split it into modules uploaded with run_python input_files.`);
   }
   if (bytes > AGENT_MAX_FILE_BYTES) {
     throw new Error(
