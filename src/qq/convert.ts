@@ -1,4 +1,5 @@
-import type { GroupMessage, GroupMessageEvent, PokeEvent, Segment } from "../types.js";
+import { createHash } from "node:crypto";
+import type { GroupMessage, GroupMessageEvent, GroupUploadEvent, PokeEvent, Segment } from "../types.js";
 
 function segmentText(seg: Segment): string {
   switch (seg.type) {
@@ -42,6 +43,7 @@ export function toGroupMessage(e: GroupMessageEvent): GroupMessage | null {
   const reply = e.message.find((s) => s.type === "reply");
   // Photos, stickers (image sub_type 1) and market stickers (mface) are all sent to the model.
   const images = e.message.flatMap((s) => ((s.type === "image" || s.type === "mface") && "url" in s.data && typeof s.data.url === "string" ? [{ url: s.data.url }] : []));
+  const files = e.message.flatMap((s) => s.type === "file" && "name" in s.data ? [{ name: s.data.name, size: s.data.file_size ?? s.data.size, fileId: s.data.file_id, busid: s.data.busid, url: s.data.url }] : []);
   return {
     platform: "qq",
     groupId: e.group_id,
@@ -55,6 +57,17 @@ export function toGroupMessage(e: GroupMessageEvent): GroupMessage | null {
     mentionsSelf: e.message.some((s) => s.type === "at" && s.data.qq === e.self_id),
     replyToMessageId: reply?.type === "reply" ? reply.data.id : undefined,
     ...(images.length > 0 ? { images } : {}),
+    ...(files.length > 0 ? { files } : {}),
+  };
+}
+
+export function toUploadMessage(e: GroupUploadEvent): GroupMessage {
+  const key = createHash("sha256").update(e.file.id).digest("hex").slice(0, 24);
+  return {
+    platform: "qq", groupId: e.group_id, messageId: `upload-${e.time}-${e.user_id}-${key}`,
+    userId: e.user_id, nickname: e.user_id, ts: e.time, text: "[文件]", selfId: e.self_id,
+    isSelf: e.user_id === e.self_id, mentionsSelf: false,
+    files: [{ name: e.file.name, size: e.file.size, fileId: e.file.id, busid: e.file.busid }],
   };
 }
 

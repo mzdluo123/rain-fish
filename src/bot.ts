@@ -57,6 +57,11 @@ export class Bot {
       return;
     }
     if (msg.images?.length) void this.opts.pictures?.capture(msg); // in the background: downloading must not delay anything
+    const fileIds = this.opts.uploads?.ingest(msg) ?? [];
+    if (fileIds.length) {
+      msg.fileIds = fileIds;
+      store.setFileIds(msg, fileIds);
+    }
     const addressed = this.isAddressedToBot(msg);
     this.events.emit("msg.in", { ...base, addressed, queued: true, text: preview(this.events, msg.text), nickname: this.events.captureContent ? msg.nickname : undefined });
     this.opts.responder.notify(msg, addressed);

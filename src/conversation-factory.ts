@@ -14,6 +14,7 @@ import { RunBudget } from "./run-budget.js";
 import { PERSONA_PATH, personaTree, seedPersona, unlinkedNotes } from "./context/persona.js";
 import { createModelImage } from "./image-resize.js";
 import { VirtualFs } from "./vfs.js";
+import { UploadStore } from "./upload-store.js";
 
 /**
  * Wires everything an agent conversation needs: the model chosen by `MODEL`, the database-backed
@@ -61,12 +62,14 @@ export async function createPiConversationFactory(db: Database, config: Config, 
   if (seedPersona(fs, config.personaSeedFile)) logger.info(`seeded ${PERSONA_PATH} from ${config.personaSeedFile}`);
   const store = new MessageStore(db);
   const images = new ImageStore(db);
+  const uploads = new UploadStore(db, config.uploads.maxBytes);
   const modelImage = createModelImage({ maxPixels: config.images.modelMaxPixels, maxEdge: config.images.modelMaxEdge, detailMaxPixels: config.images.detailMaxPixels });
   const conversations = new ConversationStore(db);
   const toolLog = logger.withTag("tool");
   const llmLog = logger.withTag("llm");
 
   return async (groupId: string): Promise<PiConversation> => {
+    const groupFs = fs.forGroup(groupId);
     // Re-read per conversation: an edit applies to groups whose conversation starts after it.
     const budget = new RunBudget(config.send.maxPerRun, config.send.gapMs);
     const pythonCount = new PythonRunCount(config.colab.maxPerRun);
@@ -85,6 +88,7 @@ export async function createPiConversationFactory(db: Database, config: Config, 
       send: (text, replyTo) => send(groupId, text, replyTo),
       sendImage: (imageId, text, replyTo) => sendImage(groupId, imageId, text, replyTo),
       images,
+      uploads,
       budget,
       modelImage,
       python,
@@ -92,7 +96,7 @@ export async function createPiConversationFactory(db: Database, config: Config, 
       modelRuntime: runtime,
       thinkingLevel: config.thinkingLevel,
     });
-    const conversation = await PiConversation.create({ groupId, session, store: conversations, context: config.context, cacheCompact: config.cacheCompact, logger, events, budgets: [budget, pythonCount], speech: budget, persona: () => (fs.exists(PERSONA_PATH) ? fs.readText(PERSONA_PATH) : undefined), personaPaths: () => personaTree(fs), unlinked: () => unlinkedNotes(fs) });
+    const conversation = await PiConversation.create({ groupId, session, store: conversations, context: config.context, cacheCompact: config.cacheCompact, logger, events, budgets: [budget, pythonCount], speech: budget, persona: () => (groupFs.exists(PERSONA_PATH) ? groupFs.readText(PERSONA_PATH) : undefined), personaPaths: () => personaTree(groupFs), unlinked: () => unlinkedNotes(groupFs) });
     let llmStarted = Date.now();
     session.subscribe((event) => {
       if (event.type === "tool_execution_start") toolLog.debug(`${event.toolName} ${JSON.stringify(event.args)}`);

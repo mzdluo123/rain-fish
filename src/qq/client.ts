@@ -1,10 +1,12 @@
 import { noopLogger } from "../logger.js";
 import type { ApiResponse, GroupHistoryPage, GroupMessage, EventLog, Logger, OneBotClientOptions, OutboundSegment, PendingRequest, QQApi, QQHistoryApi } from "../types.js";
 import { noopEventLog } from "../trace/event-log.js";
-import { toGroupMessage, toPokeMessage } from "./convert.js";
+import { toGroupMessage, toPokeMessage, toUploadMessage } from "./convert.js";
 import { parseFrame } from "./frame.js";
 import {
   getGroupListDataSchema,
+  getGroupFileUrlDataSchema,
+  getGroupFileUrlRequestSchema,
   getGroupListRequestSchema,
   getGroupMsgHistoryDataSchema,
   getGroupMsgHistoryRequestSchema,
@@ -106,6 +108,14 @@ export class OneBotClient implements QQApi, QQHistoryApi {
     return getGroupListDataSchema.parse(res.data).map((g) => g.group_id);
   }
 
+  async getGroupFileUrl(groupId: string, fileId: string, busid?: number): Promise<string> {
+    const echo = `req-${++this.seq}`;
+    const request = getGroupFileUrlRequestSchema.parse({ action: "get_group_file_url", params: { group_id: groupId, file_id: fileId, busid }, echo });
+    const res = await this.call(echo, request);
+    if (res.status !== "ok" || res.retcode !== 0) throw new Error(`get_group_file_url failed (retcode ${res.retcode})`);
+    return getGroupFileUrlDataSchema.parse(res.data).url;
+  }
+
   /** One API round trip, recorded in the event log (action, latency, outcome). */
   private async call(echo: string, request: unknown): Promise<ApiResponse> {
     const action = typeof request === "object" && request !== null && "action" in request ? request.action : undefined;
@@ -145,6 +155,12 @@ export class OneBotClient implements QQApi, QQHistoryApi {
     const raw = typeof data === "string" ? data : new TextDecoder().decode(data as ArrayBuffer);
     const frame = parseFrame(raw);
     switch (frame.kind) {
+      case "group_upload": {
+        this.selfId = frame.event.self_id;
+        const msg = toUploadMessage(frame.event);
+        (async () => this.opts.onGroupMessage(msg))().catch((err) => this.log.error(`handler error: ${errText(err)}`));
+        return;
+      }
       case "group_message": {
         this.selfId = frame.event.self_id;
         const msg = toGroupMessage(frame.event);

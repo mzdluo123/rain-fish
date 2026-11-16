@@ -74,7 +74,12 @@ export function createVfsGrepTool(vfs: VirtualFs) {
       let limitReached = false;
       for (const entry of vfs.walk(base)) {
         if (entry.kind !== "file" || (p.glob && !globMatches.has(entry.path))) continue;
-        const bytes = vfs.readFile(entry.path);
+        let bytes: Buffer;
+        try { bytes = vfs.readFile(entry.path); }
+        catch (err) {
+          if (entry.path.startsWith("/uploads/")) continue; // metadata-only uploads have no searchable bytes
+          throw err;
+        }
         if (isBinary(bytes)) continue;
         const lines = bytes.toString("utf-8").split(/\r?\n/);
         const shown = relativeTo(base, entry.path);

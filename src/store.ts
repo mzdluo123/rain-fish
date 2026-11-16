@@ -12,6 +12,7 @@ const toStored = (r: MessageRow): StoredMessage => ({
   nickname: r.nickname,
   ts: r.ts,
   text: r.text,
+  ...(JSON.parse(r.file_ids).length ? { fileIds: JSON.parse(r.file_ids) as number[] } : {}),
 });
 
 export class MessageStore {
@@ -22,10 +23,10 @@ export class MessageStore {
     const tx = this.db.transaction(() => {
       const res = this.db
         .query(
-          `INSERT OR IGNORE INTO messages (platform, group_id, message_id, user_id, nickname, ts, text)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT OR IGNORE INTO messages (platform, group_id, message_id, user_id, nickname, ts, text, file_ids)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         )
-        .run(m.platform, m.groupId, m.messageId, m.userId, m.nickname, m.ts, m.text);
+        .run(m.platform, m.groupId, m.messageId, m.userId, m.nickname, m.ts, m.text, JSON.stringify(m.fileIds ?? []));
       if (res.changes === 0) return false;
       this.db
         .query("INSERT INTO messages_fts (rowid, tokens) VALUES (?, ?)")
@@ -38,6 +39,10 @@ export class MessageStore {
   /** Number of stored messages of a group. */
   countGroup(groupId: string): number {
     return (this.db.query("SELECT COUNT(*) AS n FROM messages WHERE group_id = ?").get(groupId) as { n: number }).n;
+  }
+
+  setFileIds(m: StoredMessage, ids: number[]): void {
+    this.db.query("UPDATE messages SET file_ids = ? WHERE platform = ? AND group_id = ? AND message_id = ?").run(JSON.stringify(ids), m.platform, m.groupId, m.messageId);
   }
 
   get(platform: string, groupId: string, messageId: string): StoredMessage | undefined {
@@ -72,7 +77,7 @@ export class MessageStore {
     args.push(Math.min(Math.max(Math.trunc(q.limit ?? 10), 1), MAX_SEARCH_LIMIT));
     const rows = this.db
       .query(
-        `SELECT m.id, m.platform, m.group_id, m.message_id, m.user_id, m.nickname, m.ts, m.text,
+        `SELECT m.id, m.platform, m.group_id, m.message_id, m.user_id, m.nickname, m.ts, m.text, m.file_ids,
                 bm25(messages_fts) AS score
          FROM messages_fts JOIN messages m ON m.id = messages_fts.rowid
          WHERE ${where.join(" AND ")}

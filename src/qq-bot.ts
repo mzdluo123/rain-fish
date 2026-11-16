@@ -19,6 +19,9 @@ import { SpeakStore } from "./speak-store.js";
 import { MessageStore } from "./store.js";
 import { VirtualFs } from "./vfs.js";
 import { createWakeRules } from "./wake-rules.js";
+import { UploadStore } from "./upload-store.js";
+import { createUploadSource } from "./upload-source.js";
+import { createUploadArchive } from "./upload-archive.js";
 
 const { config, logger, events } = bootstrap();
 
@@ -27,6 +30,13 @@ const store = new MessageStore(db);
 // The client and the bot reference each other: the client delivers messages, the bot sends through it.
 // The agent's `send` tool posts via the bot; the responder wakes the agent for batches of queued messages.
 let bot: Bot;
+const uploads = createUploadArchive({
+  store: new UploadStore(db, config.uploads.maxBytes), privacy: config.uploads.privacy, logger,
+  source: createUploadSource({ maxBytes: config.uploads.maxBytes, logger, resolve: async (groupId, file) => {
+    if (!file.fileId) throw new Error("Missing QQ file id");
+    return client.getGroupFileUrl(groupId, file.fileId, file.busid);
+  } }),
+});
 const imageStore = new ImageStore(db);
 const modelImage = createModelImage({ maxPixels: config.images.modelMaxPixels, maxEdge: config.images.modelMaxEdge, detailMaxPixels: config.images.detailMaxPixels });
 const imageSource = config.images.maxBytes > 0 && config.images.maxPerRun > 0 ? createImageSource({ ...config.images, logger }) : undefined;
@@ -58,7 +68,7 @@ const makeConversation = await orExit(logger, () =>
 const wakeRules = createWakeRules({ fs: new VirtualFs(db), logger }); // /wake-rules.yaml in the agent's filesystem: created if missing, reloaded when the agent edits it
 const responder = new PiResponder(
   makeConversation,
-  { wake: config.wake, weigh: wakeRules.weigh, timing: wakeRules.timing, speakEveryRuns: config.speakEveryRuns, speakStore: new SpeakStore(db), pending: new PendingStore(db), images: promptImages, pictures, logger, events },
+  { wake: config.wake, weigh: wakeRules.weigh, timing: wakeRules.timing, speakEveryRuns: config.speakEveryRuns, speakStore: new SpeakStore(db), pending: new PendingStore(db), images: promptImages, pictures, uploads, logger, events },
 );
 let backfilled = false;
 const client = new OneBotClient({
@@ -78,7 +88,7 @@ const client = new OneBotClient({
   },
   logger,
 });
-bot = new Bot({ store, images: imageStore, imageStoreMaxBytes: config.images.storeMaxBytes, pictures, responder, api: client, groups: config.groups, logger, events });
+bot = new Bot({ store, images: imageStore, imageStoreMaxBytes: config.images.storeMaxBytes, pictures, uploads, responder, api: client, groups: config.groups, logger, events });
 
 events.emit("proc.start", {
   entry: "bot",

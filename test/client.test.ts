@@ -47,6 +47,23 @@ function connect(port: number, extra: Partial<ConstructorParameters<typeof OneBo
 }
 
 describe("receiving", () => {
+  it("delivers group upload notices as ordinary file messages and validates file URL API responses", async () => {
+    const requests: unknown[] = [];
+    const server = fakeNapCat({
+      onOpen(ws) { ws.send(JSON.stringify({ post_type: "notice", notice_type: "group_upload", group_id: 100, user_id: 42, self_id: 9, time: 1700000000, file: { id: "uuid", name: "notes.md", size: 3, busid: 102 } })); },
+      onMessage(ws, raw) {
+        const req = JSON.parse(raw);
+        requests.push(req);
+        ws.send(JSON.stringify({ status: "ok", retcode: 0, echo: req.echo, data: { url: requests.length === 1 ? "https://files.qq.com/a" : "not a URL" } }));
+      },
+    });
+    const { client, received } = connect(server.port!);
+    await until(() => received.length === 1);
+    expect(received[0]!.files).toEqual([{ name: "notes.md", size: 3, fileId: "uuid", busid: 102 }]);
+    expect(await client.getGroupFileUrl("100", "uuid", 102)).toBe("https://files.qq.com/a");
+    expect(requests[0]).toMatchObject({ action: "get_group_file_url", params: { group_id: 100, file_id: "uuid", busid: 102 } });
+    await expect(client.getGroupFileUrl("100", "uuid", 102)).rejects.toThrow();
+  });
   it("hands only validated, converted group messages to the core, and sends the token", async () => {
     const seen = { auth: null as string | null };
     const server = fakeNapCat({

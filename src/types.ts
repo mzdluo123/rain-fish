@@ -17,6 +17,7 @@ import type { z } from "zod";
 import type {
   apiResponseSchema,
   groupMessageEventSchema,
+  groupUploadEventSchema,
   pokeEventSchema,
   outboundSegmentSchema,
   segmentSchema,
@@ -26,6 +27,7 @@ import type { ImageStore } from "./image-store.js";
 import type { RunBudget } from "./run-budget.js";
 import type { MessageStore } from "./store.js";
 import type { VirtualFs } from "./vfs.js";
+import type { UploadStore } from "./upload-store.js";
 
 // ---- storage ---------------------------------------------------------------------
 
@@ -38,6 +40,8 @@ export interface StoredMessage {
   /** Unix seconds. */
   ts: number;
   text: string;
+  /** Local upload receipt ids (f12 in the agent protocol). */
+  fileIds?: number[];
 }
 
 export interface SearchQuery {
@@ -71,6 +75,7 @@ export interface MessageRow {
   nickname: string;
   ts: number;
   text: string;
+  file_ids: string;
 }
 
 export type SearchRow = MessageRow & { score: number };
@@ -151,6 +156,7 @@ export interface AgentDeps {
   modelImage?: ModelImageFn;
   /** Runs Python files on the remote Colab machine (`run_python`); omit and the tool does not exist. */
   python?: PythonTool;
+  uploads?: UploadStore;
 }
 
 // ---- Python on Google Colab (`run_python`) -------------------------------------------
@@ -241,6 +247,7 @@ export type Segment = z.output<typeof segmentSchema>;
 export type OutboundSegment = z.input<typeof outboundSegmentSchema>;
 export type GroupMessageEvent = z.output<typeof groupMessageEventSchema>;
 export type PokeEvent = z.output<typeof pokeEventSchema>;
+export type GroupUploadEvent = z.output<typeof groupUploadEventSchema>;
 export type ApiResponse = z.output<typeof apiResponseSchema>;
 export type Config = z.output<typeof configSchema>;
 
@@ -248,6 +255,7 @@ export type Config = z.output<typeof configSchema>;
 export type Frame =
   | { kind: "group_message"; event: GroupMessageEvent }
   | { kind: "group_poke"; event: PokeEvent }
+  | { kind: "group_upload"; event: GroupUploadEvent }
   | { kind: "api_response"; response: ApiResponse }
   | { kind: "lifecycle"; selfId: string; subType: string }
   | { kind: "ignored" }
@@ -325,6 +333,62 @@ export interface ImageRef {
   url: string;
 }
 
+/** Only QQ locators, never host paths. URLs are checked again at every download hop. */
+export interface FileRef {
+  name: string;
+  size?: number;
+  fileId?: string;
+  busid?: number;
+  url?: string;
+}
+
+export type UploadState = "pending" | "queued" | "stored" | "too_large" | "failed";
+
+export interface StoredUpload {
+  id: number;
+  platform: string;
+  group_id: string;
+  source_message_id: string;
+  idx: number;
+  uploader_id: string;
+  name: string;
+  path: string;
+  size: number | null;
+  sha256: string | null;
+  mime: string;
+  created_at: number;
+  state: UploadState;
+  consent: number;
+  source: string;
+}
+
+export type UploadLoadResult = { state: "stored"; data: Buffer; mime: string } | { state: "too_large"; size?: number } | { state: "failed" };
+export interface UploadSource {
+  load(groupId: string, file: FileRef): Promise<UploadLoadResult>;
+}
+
+export interface UploadArchive {
+  /** Registers receipts and accepts an exact uploader consent command, synchronously before queueing. */
+  ingest(msg: GroupMessage): number[];
+  /** Waits for approved downloads; pending files are metadata only. Safe to call again after a restart. */
+  capture(msg: GroupMessage): Promise<StoredUpload[]>;
+}
+
+export interface UploadQuery {
+  uploader?: string;
+  since?: number;
+  until?: number;
+  limit?: number;
+}
+
+export interface UploadSourceOptions {
+  maxBytes: number;
+  resolve: (groupId: string, file: FileRef) => Promise<string>;
+  fetch?: typeof fetch;
+  timeoutMs?: number;
+  logger?: Logger;
+}
+
 /** A validated group message, already flattened to plain text. */
 export interface GroupMessage extends StoredMessage {
   platform: "qq";
@@ -338,6 +402,7 @@ export interface GroupMessage extends StoredMessage {
   replyToMessageId?: string;
   /** Pictures (not stickers) attached to the message, in order; fetched only when the agent is run on the batch. */
   images?: ImageRef[];
+  files?: FileRef[];
 }
 
 /** A group message queued for the agent; `addressed`: it @-mentions the bot or replies to one of its messages. */
@@ -440,6 +505,7 @@ export interface BotOptions {
   imageStoreMaxBytes?: number;
   /** Picture capture on arrival: every picture of an incoming message is downloaded and stored in the background. */
   pictures?: PictureArchive;
+  uploads?: UploadArchive;
   responder: GroupResponder;
   api: QQApi;
   /** Only handle these group ids; omit for all groups. */

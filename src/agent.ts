@@ -16,6 +16,7 @@ import { createSendImageTool, createSendTool, SEND_IMAGE_TOOL, SEND_TOOL } from 
 import { createStopTool, STOP_TOOL } from "./tools/stop.js";
 import { createViewImageTool, VIEW_IMAGE_TOOL } from "./tools/view-image.js";
 import { createRunPythonTool, RUN_PYTHON_TOOL } from "./tools/run-python.js";
+import { createFetchFileTool, createListUploadsTool, FETCH_FILE_TOOL, LIST_UPLOADS_TOOL } from "./tools/uploads.js";
 import { canReadImages } from "./context/archive.js";
 import { createVfsFindTool, createVfsGrepTool } from "./tools/vfs-search.js";
 import type { AgentDeps } from "./types.js";
@@ -23,7 +24,7 @@ import { assertSeen } from "./context/read-guard.js";
 import { createVfsOperations } from "./vfs-ops.js";
 
 /** The only tools the agent may ever use. `bash` is deliberately absent; `run_python` runs code on Colab, never on this host, and exists only if configured. */
-export const ALLOWED_TOOLS = ["read", "write", "edit", "ls", "find", "grep", SEARCH_TOOL, VIEW_IMAGE_TOOL, SEND_TOOL, SEND_IMAGE_TOOL, STOP_TOOL, RUN_PYTHON_TOOL] as const;
+export const ALLOWED_TOOLS = ["read", "write", "edit", "ls", "find", "grep", SEARCH_TOOL, VIEW_IMAGE_TOOL, SEND_TOOL, SEND_IMAGE_TOOL, STOP_TOOL, RUN_PYTHON_TOOL, LIST_UPLOADS_TOOL, FETCH_FILE_TOOL] as const;
 
 /** The agent's working directory is the root of its virtual filesystem. */
 const VFS_ROOT = "/";
@@ -36,7 +37,8 @@ const GUARD_BLOCKERS: ReadonlySet<string> = new Set([WRITE_TOOL]);
 /** `run_python` reads a file: in a batch that also writes or edits one, it could run the old text. */
 const RUN_BLOCKERS: ReadonlySet<string> = new Set([WRITE_TOOL, EDIT_TOOL]);
 
-export async function createAgent({ systemPrompt, fs, store, groupId, send, sendImage, images, budget, modelImage, python, model, modelRuntime, thinkingLevel }: AgentDeps): Promise<{ session: AgentSession }> {
+export async function createAgent({ systemPrompt, fs: baseFs, store, groupId, send, sendImage, images, budget, modelImage, python, uploads, model, modelRuntime, thinkingLevel }: AgentDeps): Promise<{ session: AgentSession }> {
+  const fs = baseFs.forGroup(groupId);
   let current: AgentSession | undefined; // set right after the session exists; the tools below use it lazily
   // An edit, or a write over an existing file, needs the file's current text in the context window: the guard looks at the session's own messages.
   const ops = createVfsOperations(fs, { requireSeen: (p) => assertSeen(fs, current?.agent.state.messages ?? [], p) });
@@ -61,7 +63,7 @@ export async function createAgent({ systemPrompt, fs, store, groupId, send, send
   const settingsManager = SettingsManager.create(VFS_ROOT, getAgentDir());
   settingsManager.applyOverrides({ compaction: { enabled: false }, images: { autoResize: false } });
 
-  const allowed: string[] = ALLOWED_TOOLS.filter((n) => n !== RUN_PYTHON_TOOL || python !== undefined);
+  const allowed: string[] = ALLOWED_TOOLS.filter((n) => (n !== RUN_PYTHON_TOOL || python !== undefined) && (![LIST_UPLOADS_TOOL, FETCH_FILE_TOOL].includes(n) || uploads !== undefined));
   const { session } = await createAgentSession({
     cwd: VFS_ROOT,
     resourceLoader,
@@ -80,12 +82,13 @@ export async function createAgent({ systemPrompt, fs, store, groupId, send, send
       createLsToolDefinition(VFS_ROOT, { operations: ops.ls }),
       createVfsFindTool(fs),
       createVfsGrepTool(fs),
-      createSearchMessagesTool(store, groupId, images),
+      createSearchMessagesTool(store, groupId, images, uploads),
       createViewImageTool(images, groupId, () => canReadImages(current?.model), modelImage),
       createSendTool(send, budget),
       createSendImageTool(sendImage, budget, fs),
       createStopTool(),
-      ...(python ? [createRunPythonTool(fs, python)] : []),
+      ...(uploads ? [createListUploadsTool(uploads, groupId), createFetchFileTool(uploads, fs, groupId)] : []),
+      ...(python ? [createRunPythonTool(fs, python, uploads && { store: uploads, groupId })] : []),
       // Pi's per-tool generics are invariant in renderCall; the array type is the SDK's erased form.
     ] as unknown as ToolDefinition[],
   });
