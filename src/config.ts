@@ -90,6 +90,9 @@ export const configSchema = z
     BACKFILL_MIN_MESSAGES: z.coerce.number().int().nonnegative().default(100),
     /** Only messages newer than this many days are backfilled. */
     BACKFILL_MAX_AGE_DAYS: z.coerce.number().positive().default(5),
+    // --- group uploads ---
+    UPLOAD_MAX_BYTES: z.coerce.number().int().positive().max(64 * 1024 * 1024).default(1024 * 1024),
+    UPLOAD_PRIVACY: z.enum(["ask", "auto"]).default("ask"),
     // --- images ---
     /** Largest image (bytes) fetched for the agent; bigger ones stay a `[图片]` placeholder. 0 = images are never fetched. Needs a vision model. */
     IMAGE_MAX_BYTES: z.coerce.number().int().nonnegative().default(3 * 1024 * 1024),
@@ -181,6 +184,7 @@ export const configSchema = z
       addressedMaxWaitMs: e.WAKE_ADDRESSED_MAX_WAIT_SECONDS * 1000,
       maxBatch: e.WAKE_MAX_BATCH,
     },
+    uploads: { maxBytes: e.UPLOAD_MAX_BYTES, privacy: e.UPLOAD_PRIVACY },
     images: {
       maxBytes: e.IMAGE_MAX_BYTES,
       maxPerRun: e.IMAGE_MAX_PER_RUN,

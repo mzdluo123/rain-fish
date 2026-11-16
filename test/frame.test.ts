@@ -18,6 +18,22 @@ const group = {
 const seg = (type: string, data: unknown) => ({ type, data });
 const parse = (o: unknown) => parseFrame(JSON.stringify(o));
 
+describe("parseFrame: group uploads", () => {
+  const upload = { post_type: "notice", notice_type: "group_upload", self_id: 9, time: 1700000000, group_id: 100, user_id: 42, file: { id: "/qq-id", name: "notes.md", size: "12186", busid: 102 } };
+  it("validates upload notices and normalizes ids and file sizes", () => {
+    const f = parse(upload);
+    expect(f.kind).toBe("group_upload");
+    if (f.kind !== "group_upload") throw new Error(f.kind);
+    expect(f.event).toMatchObject({ group_id: "100", user_id: "42", file: { size: 12186, busid: 102 } });
+  });
+  it("drops malformed notices, while malformed file segments retain only a placeholder", () => {
+    for (const file of [{ ...upload.file, size: -1 }, { ...upload.file, id: "" }, { ...upload.file, busid: "invalid" }]) expect(parse({ ...upload, file }).kind).toBe("invalid");
+    const f = parse({ ...group, message: [seg("file", { name: "notes.md", file_size: "invalid", path: "/etc/passwd" })] });
+    if (f.kind !== "group_message") throw new Error(f.kind);
+    expect(f.event.message).toEqual([{ type: "file", data: {} }]);
+  });
+});
+
 describe("parseFrame: group messages", () => {
   it("validates array-format messages and normalises ids to strings", () => {
     const f = parse({ ...group, message: [seg("text", { text: "hi" }), seg("at", { qq: 10001 })] });

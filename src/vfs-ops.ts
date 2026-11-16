@@ -12,6 +12,7 @@ const PYTHON_FILE = /\.py$/i;
  * text is the agent's only instruction when it hits the size limit, so it spells out how to reorganise.
  */
 function assertAgentFileType(n: string): void {
+  if (n === "/uploads" || n.startsWith("/uploads/")) throw new Error("EINVAL: uploaded originals are read-only. Save your notes or scripts outside /uploads/.");
   if (!/\.md$/i.test(n) && !PYTHON_FILE.test(n) && n !== WAKE_RULES_PATH) {
     throw new Error(`EINVAL: only Markdown (.md) and Python (.py) files can be created or modified, and '${n}' is neither. Use a file name ending in .md (notes) or .py (scripts).`);
   }

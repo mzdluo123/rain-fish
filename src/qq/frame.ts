@@ -1,5 +1,5 @@
 import type { Frame } from "../types.js";
-import { apiResponseSchema, eventHeadSchema, groupMessageEventSchema, lifecycleEventSchema, pokeEventSchema } from "./schemas.js";
+import { apiResponseSchema, eventHeadSchema, groupMessageEventSchema, groupUploadEventSchema, lifecycleEventSchema, pokeEventSchema } from "./schemas.js";
 
 const summarize = (issues: readonly { path: PropertyKey[]; message: string }[]) =>
   issues
@@ -40,6 +40,10 @@ export function parseFrame(raw: string): Frame {
   if (post_type === "notice" && notice_type === "notify" && sub_type === "poke" && group_id !== undefined) {
     const r = pokeEventSchema.safeParse(json);
     return r.success ? { kind: "group_poke", event: r.data } : { kind: "invalid", reason: `group poke: ${summarize(r.error.issues)}` };
+  }
+  if (post_type === "notice" && notice_type === "group_upload") {
+    const r = groupUploadEventSchema.safeParse(json);
+    return r.success ? { kind: "group_upload", event: r.data } : { kind: "invalid", reason: `group upload: ${summarize(r.error.issues)}` };
   }
   // heartbeat, other notices, request, private messages (and private pokes): not used by the bot.
   return { kind: "ignored" };

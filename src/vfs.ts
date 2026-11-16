@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import path from "node:path";
-import type { FileEntry, FileStat, VfsLimits } from "./types.js";
+import type { FileEntry, FileStat, StoredUpload, VfsLimits } from "./types.js";
 
 /** Path limits: parent directories are stored as rows outside `maxTotalBytes`, so long/deep paths must be bounded. */
 export const MAX_PATH_BYTES = 1024;
@@ -40,7 +40,36 @@ export class VirtualFs {
   constructor(
     private readonly db: Database,
     private readonly limits: VfsLimits = DEFAULT_VFS_LIMITS,
+    private readonly uploadGroup?: string,
   ) {}
+
+  /** Same filesystem, with upload visibility scoped to the agent's group at every entry point. */
+  forGroup(groupId: string): VirtualFs {
+    return new VirtualFs(this.db, this.limits, groupId);
+  }
+
+  private uploadRows(base = "/"): StoredUpload[] {
+    const where: string[] = [];
+    const args: (string | number)[] = [];
+    if (this.uploadGroup !== undefined) { where.push("group_id = ?"); args.push(this.uploadGroup); }
+    if (base !== "/") {
+      const [lo, hi] = subtreeRange(base);
+      where.push("(path = ? OR (path >= ? AND path < ?))");
+      args.push(base, lo, hi);
+    }
+    return this.db.query(`SELECT * FROM vfs_files ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY state = 'stored' DESC, id`).all(...args) as StoredUpload[];
+  }
+
+  private uploadEntries(base = "/"): FileEntry[] {
+    const entries = new Map<string, FileEntry>();
+    for (const row of this.uploadRows(base)) {
+      if (!entries.has(row.path)) entries.set(row.path, { path: row.path, kind: "file", size: row.size ?? 0, mtime: row.created_at });
+      for (let dir = path.posix.dirname(row.path); dir !== "/"; dir = path.posix.dirname(dir)) {
+        entries.set(dir, { path: dir, kind: "dir", size: 0, mtime: row.created_at });
+      }
+    }
+    return [...entries.values()];
+  }
 
   /** Absolute normalised path. Relative paths resolve against "/". */
   static normalize(p: string): string {
@@ -54,6 +83,17 @@ export class VirtualFs {
   stat(p: string): FileStat | undefined {
     const n = VirtualFs.normalize(p);
     if (n === "/") return { kind: "dir", size: 0, mtime: 0 };
+    if (n === "/uploads" || n.startsWith("/uploads/")) {
+      const entry = this.uploadEntries(n).find((e) => e.path === n);
+      if (entry) return { kind: entry.kind, size: entry.size, mtime: entry.mtime };
+      if (this.uploadGroup !== undefined) return undefined;
+    }
+    return this.contentStat(n);
+  }
+
+  /** Physical tree only: metadata-only receipts must never affect writes, quotas or mkdir. */
+  private contentStat(n: string): FileStat | undefined {
+    if (n === "/") return { kind: "dir", size: 0, mtime: 0 };
     const row = this.db.query("SELECT kind, size, mtime FROM files WHERE path = ?").get(n) as FileStat | null;
     return row ?? undefined;
   }
@@ -64,10 +104,20 @@ export class VirtualFs {
 
   readFile(p: string): Buffer {
     const n = VirtualFs.normalize(p);
+    if (n.startsWith("/uploads/")) {
+      const row = this.uploadRows(n).find((r) => r.path === n);
+      if (row && row.state !== "stored") {
+        const reason = row.state === "too_large" ? "file too large (太大); metadata only, no bytes saved" :
+          row.state === "pending" ? `awaiting uploader consent; uploader must say 同意上传 f${row.id} in the original group` :
+          row.state === "queued" ? "download in progress; try again later" : "download failed; ask the uploader to send the file again";
+        throw new VfsError(row.state === "too_large" ? "EFBIG" : "EBUSY", reason, n);
+      }
+    }
     const st = this.stat(n);
     if (!st) throw new VfsError("ENOENT", "no such file or directory", n);
     if (st.kind === "dir") throw new VfsError("EISDIR", "illegal operation on a directory", n);
-    const row = this.db.query("SELECT content FROM files WHERE path = ?").get(n) as { content: Uint8Array };
+    const row = this.db.query("SELECT content FROM files WHERE path = ?").get(n) as { content: Uint8Array } | null;
+    if (!row) throw new VfsError("ENOENT", "uploaded content is no longer available; ask the uploader to send it again", n);
     return Buffer.from(row.content);
   }
 
@@ -78,13 +128,14 @@ export class VirtualFs {
   /** Creates or overwrites a file; missing parent directories are created. */
   writeFile(p: string, data: string | Uint8Array): void {
     const n = VirtualFs.normalize(p);
+    if (this.uploadGroup !== undefined && (n === "/uploads" || n.startsWith("/uploads/"))) throw new VfsError("EINVAL", "uploads are read-only", n);
     const bytes = typeof data === "string" ? Buffer.from(data, "utf-8") : data;
     if (n === "/") throw new VfsError("EISDIR", "illegal operation on a directory", n);
     if (bytes.byteLength > this.limits.maxFileBytes) {
       throw new VfsError("EFBIG", `file too large (${bytes.byteLength} > ${this.limits.maxFileBytes} bytes)`, n);
     }
     this.db.transaction(() => {
-      const existing = this.stat(n);
+      const existing = this.contentStat(n);
       if (existing?.kind === "dir") throw new VfsError("EISDIR", "illegal operation on a directory", n);
       const sum = this.db.query("SELECT COALESCE(SUM(size), 0) AS t FROM files").get() as { t: number }; // aggregate always returns one row
       const total = sum.t;
@@ -105,7 +156,7 @@ export class VirtualFs {
   createFiles(files: readonly { path: string; content: Uint8Array }[]): void {
     this.db.transaction(() => {
       for (const file of files) {
-        if (this.exists(file.path)) throw new VfsError("EINVAL", "output already exists; choose a new path", file.path);
+        if (this.contentStat(VirtualFs.normalize(file.path))) throw new VfsError("EINVAL", "output already exists; choose a new path", file.path);
         this.writeFile(file.path, file.content);
       }
     }).immediate();
@@ -114,6 +165,7 @@ export class VirtualFs {
   /** `mkdir -p`: existing directories are fine, a file in the way is ENOTDIR. */
   mkdir(p: string): void {
     const n = VirtualFs.normalize(p);
+    if (this.uploadGroup !== undefined && (n === "/uploads" || n.startsWith("/uploads/"))) throw new VfsError("EINVAL", "uploads are read-only", n);
     this.db.transaction(() => this.ensureDirs(n)).immediate();
   }
 
@@ -123,15 +175,7 @@ export class VirtualFs {
     const st = this.stat(n);
     if (!st) throw new VfsError("ENOENT", "no such file or directory", n);
     if (st.kind !== "dir") throw new VfsError("ENOTDIR", "not a directory", n);
-    const [lo, hi] = subtreeRange(n);
-    const rows = this.db
-      .query(
-        `SELECT substr(path, ?) AS name FROM files
-         WHERE path >= ? AND path < ? AND instr(substr(path, ?), '/') = 0
-         ORDER BY path`,
-      )
-      .all(lo.length + 1, lo, hi, lo.length + 1) as { name: string }[];
-    return rows.map((r) => r.name);
+    return this.walk(n).filter((e) => e.path !== n && path.posix.dirname(e.path) === n).map((e) => path.posix.basename(e.path));
   }
 
   /** `p` itself (if it exists) followed by everything below it, in path order. */
@@ -143,12 +187,18 @@ export class VirtualFs {
     if (self.kind === "file") return out;
     const [lo, hi] = subtreeRange(n);
     out.push(...(this.db.query("SELECT path, kind, size, mtime FROM files WHERE path >= ? AND path < ? ORDER BY path").all(lo, hi) as Row[]));
-    return out;
+    const visible = out.filter((e) => this.uploadGroup === undefined || (e.path !== "/uploads" && !e.path.startsWith("/uploads/")));
+    const all = new Map(visible.map((e) => [e.path, e]));
+    for (const entry of this.uploadEntries(n)) {
+      if (entry.path === n || (entry.path >= lo && entry.path < hi)) all.set(entry.path, entry);
+    }
+    return [...all.values()].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
   }
 
   /** Deletes a file, or a directory (recursively only if asked). The root cannot be removed. */
   remove(p: string, recursive = false): void {
     const n = VirtualFs.normalize(p);
+    if (this.uploadGroup !== undefined && (n === "/uploads" || n.startsWith("/uploads/"))) throw new VfsError("EINVAL", "uploads are read-only", n);
     if (n === "/") throw new VfsError("EBUSY", "cannot remove the root directory", n);
     this.db.transaction(() => {
       const st = this.stat(n);
@@ -189,7 +239,7 @@ export class VirtualFs {
     if (dir === "/") return;
     const missing: string[] = [];
     for (let cur = dir; cur !== "/"; cur = path.posix.dirname(cur)) {
-      const st = this.stat(cur);
+      const st = this.contentStat(cur);
       if (st?.kind === "file") throw new VfsError("ENOTDIR", "not a directory", cur);
       if (!st) missing.push(cur);
     }

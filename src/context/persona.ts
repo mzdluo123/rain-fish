@@ -70,6 +70,7 @@ function linkedPaths(fs: Pick<VirtualFs, "exists" | "readText">, limit: number):
     }
     for (const m of text.matchAll(LINK)) {
       const linked = path.posix.normalize(m[1]!);
+      if (linked.startsWith("/uploads/")) continue; // external originals are not self-profile notes
       seen.add(linked);
       if (MARKDOWN.test(linked)) queue.push(linked);
     }
@@ -95,6 +96,6 @@ export function unlinkedNotes(fs: Pick<VirtualFs, "exists" | "readText" | "walk"
   const reached = linkedPaths(fs, Infinity);
   return fs
     .walk("/")
-    .filter((e) => e.kind === "file" && TREE_FILE.test(e.path) && !reached.has(e.path))
+    .filter((e) => e.kind === "file" && !e.path.startsWith("/uploads/") && TREE_FILE.test(e.path) && !reached.has(e.path))
     .map((e) => e.path);
 }

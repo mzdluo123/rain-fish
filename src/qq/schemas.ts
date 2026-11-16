@@ -18,6 +18,15 @@ const atSegment = z.object({ type: z.literal("at"), data: z.object({ qq: idSchem
 const replySegment = z.object({ type: z.literal("reply"), data: z.object({ id: idSchema }) });
 /** Pictures (`image` photos and stickers, `mface` market stickers): only `url` is used; without one the segment is the plain `simple` variant below and stays a text placeholder. */
 const picture = <T extends string>(type: T) => z.object({ type: z.literal(type), data: z.object({ url: z.string().min(1) }) });
+const fileSize = z.union([z.number(), z.string().regex(/^\d+$/)]).transform(Number).pipe(z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER));
+const fileSegment = z.object({ type: z.literal("file"), data: z.object({
+  name: z.string().min(1).max(4096),
+  file_id: z.string().min(1).max(4096).optional(),
+  file_size: fileSize.optional(),
+  size: fileSize.optional(),
+  busid: z.coerce.number().int().nonnegative().optional(),
+  url: z.string().max(16384).optional(),
+}) });
 const simple = <T extends string>(type: T) => z.object({ type: z.literal(type), data: empty });
 const unknownSegment = z
   .object({ type: z.string(), data: empty.optional() })
@@ -29,6 +38,7 @@ export const segmentSchema = z.union([
   replySegment,
   picture("image"),
   picture("mface"),
+  fileSegment,
   simple("face"),
   simple("mface"),
   simple("dice"),
@@ -37,7 +47,7 @@ export const segmentSchema = z.union([
   simple("image"),
   simple("record"),
   simple("video"),
-  simple("file"),
+  z.object({ type: z.literal("file"), data: z.object({}) }), // metadata unavailable: keep only the placeholder
   simple("json"),
   simple("forward"),
   unknownSegment,
@@ -130,6 +140,17 @@ export const pokeEventSchema = z.object({
   target_id: idSchema.nullish(),
 });
 
+/** OneBot group file notice; it may have no real message id. */
+export const groupUploadEventSchema = z.object({
+  post_type: z.literal("notice"),
+  notice_type: z.literal("group_upload"),
+  self_id: idSchema,
+  time: z.number().int().nonnegative(),
+  group_id: idSchema,
+  user_id: idSchema,
+  file: z.object({ id: z.string().min(1).max(4096), name: z.string().min(1).max(4096), size: fileSize, busid: z.coerce.number().int().nonnegative() }),
+});
+
 // ---- API request / response ------------------------------------------------------
 
 export const apiResponseSchema = z.object({
@@ -179,3 +200,10 @@ export const getGroupMsgHistoryDataSchema = z.object({ messages: z.array(z.unkno
 export const getGroupListRequestSchema = z.object({ action: z.literal("get_group_list"), params: z.object({}), echo: z.string().min(1) });
 
 export const getGroupListDataSchema = z.array(z.object({ group_id: idSchema }));
+
+export const getGroupFileUrlRequestSchema = z.object({
+  action: z.literal("get_group_file_url"),
+  params: z.object({ group_id: z.string().regex(/^\d+$/).transform(Number), file_id: z.string().min(1).max(4096), busid: z.number().int().nonnegative().optional() }),
+  echo: z.string().min(1),
+});
+export const getGroupFileUrlDataSchema = z.object({ url: z.url() });

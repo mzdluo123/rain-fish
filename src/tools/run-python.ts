@@ -6,6 +6,8 @@ import { PYTHON_OUTPUT_MAX_BYTES } from "../config.js";
 import type { PythonRunResult, PythonTool, StreamOutput } from "../types.js";
 import { VirtualFs } from "../vfs.js";
 import { element } from "../xml.js";
+import type { UploadStore } from "../upload-store.js";
+import { uploadInput } from "./uploads.js";
 
 export const RUN_PYTHON_TOOL = "run_python";
 /** Largest script uploaded (the agent writes at most 10 KiB per file; host-imported files may be bigger). */
@@ -48,13 +50,14 @@ export function formatRunResult(file: string, r: PythonRunResult, timeoutSeconds
  * file is read through `VirtualFs` only (never a host path), and its text is shipped to Colab: nothing runs on this host.
  * `sequential`: a batch with it runs in call order, and `createAgent` holds it back when the same batch writes or edits a file.
  */
-export function createRunPythonTool(fs: VirtualFs, python: PythonTool) {
+export function createRunPythonTool(fs: VirtualFs, python: PythonTool, uploads?: { store: UploadStore; groupId: string }) {
   return defineTool({
     name: RUN_PYTHON_TOOL,
     label: "Run Python",
     description:
       "Run one Python file from your filesystem on a remote Google Colab CPU machine and get its exit code, stdout and stderr. " +
       "Use input_files [{vfs_path, sandbox_path}] to upload data or modules, and output_files [{sandbox_path, vfs_path}] to save generated files. Sandbox paths are relative to the working directory. Outputs must be new paths under /artifacts/; existing files are never overwritten. Transfers allow 32 files, 1 MiB each, 4 MiB total per direction. Output files are saved atomically only on exit 0 without timeout. The temporary directory is deleted afterwards; " +
+      "For group uploads use upload_ids [\"f12\"] instead of manual mappings; each appears as f12__name in the sandbox. " +
       "nothing carries over between runs, and stdin is empty (no input()); pass inputs as command-line arguments (`args`, read with sys.argv[1:]). Common packages (numpy, pandas, ...) are installed and the machine has internet access. " +
       `The first run after a pause also starts the machine and may take a minute or two. Output longer than the limit is cut in the middle (head + tail are kept); ` +
       `if you need more, prefer making the script print only what you need; raise max_output_bytes only when you really need the whole output (it all enters your context). At most ${python.count.max} runs per run of yours.`,
@@ -62,6 +65,7 @@ export function createRunPythonTool(fs: VirtualFs, python: PythonTool) {
     parameters: Type.Object({
       path: Type.String({ description: "Absolute path of the .py file, e.g. /scripts/calc.py." }),
       input_files: Type.Optional(Type.Array(Type.Object({ vfs_path: Type.String(), sandbox_path: Type.String() }), { maxItems: TRANSFER_MAX_FILES })),
+      upload_ids: Type.Optional(Type.Array(Type.String(), { maxItems: TRANSFER_MAX_FILES, description: "Stored files of this group, e.g. [f12]; automatically mapped to f12__name" })),
       output_files: Type.Optional(Type.Array(Type.Object({ sandbox_path: Type.String(), vfs_path: Type.String() }), { maxItems: TRANSFER_MAX_FILES })),
       args: Type.Optional(Type.Array(Type.String(), { maxItems: PYTHON_MAX_ARGS, description: `Command-line arguments for the script, one string each (sys.argv[1:]); no shell, so quotes and spaces are taken literally. At most ${PYTHON_MAX_ARGS}, ${PYTHON_ARGS_MAX_BYTES} bytes in total.` })),
       timeout_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: python.maxTimeoutSeconds, description: `Wall-clock limit; the script is killed after it. Default ${python.defaultTimeoutSeconds}, at most ${python.maxTimeoutSeconds}.` })),
@@ -82,7 +86,9 @@ export function createRunPythonTool(fs: VirtualFs, python: PythonTool) {
       if (args.reduce((n, a) => n + Buffer.byteLength(a, "utf-8"), 0) > PYTHON_ARGS_MAX_BYTES) throw new Error(`EINVAL: the arguments are over ${PYTHON_ARGS_MAX_BYTES} bytes in total; put large inputs into the script itself.`);
       const timeoutSeconds = Math.min(p.timeout_seconds ?? python.defaultTimeoutSeconds, python.maxTimeoutSeconds);
       const maxOutputBytes = p.max_output_bytes === undefined ? undefined : Math.min(p.max_output_bytes, PYTHON_OUTPUT_MAX_BYTES);
-      const inputs = (p.input_files ?? []).map((f) => ({ path: remoteFilePath(f.sandbox_path), content: fs.readFile(f.vfs_path) }));
+      if (p.upload_ids?.length && !uploads) throw new Error("Group uploads are not available.");
+      const mapped = (p.upload_ids ?? []).map((id) => uploadInput(uploads!.store, fs, uploads!.groupId, id));
+      const inputs = [...(p.input_files ?? []), ...mapped].map((f) => ({ path: remoteFilePath(f.sandbox_path), content: fs.readFile(f.vfs_path) }));
       checkTransferSizes(inputs.map((f) => f.content.byteLength));
       const outputs = (p.output_files ?? []).map((f) => ({ path: remoteFilePath(f.sandbox_path), dest: VirtualFs.normalize(f.vfs_path) }));
       checkTransferSizes(outputs.map(() => 0));

@@ -3,6 +3,7 @@ import { Type } from "typebox";
 import { imageRef, type ImageStore } from "../image-store.js";
 import { MAX_SEARCH_LIMIT, type MessageStore } from "../store.js";
 import { escapeText } from "../xml.js";
+import { uploadSummary, type UploadStore } from "../upload-store.js";
 
 export const SEARCH_TOOL = "search_messages";
 const MAX_TEXT = 300;
@@ -15,7 +16,7 @@ function parseTime(label: string, value: string | undefined): number | undefined
 }
 
 /** Read-only full-text search over the stored chat history of the one group this agent serves. */
-export function createSearchMessagesTool(store: MessageStore, groupId: string, images?: ImageStore) {
+export function createSearchMessagesTool(store: MessageStore, groupId: string, images?: ImageStore, uploads?: UploadStore) {
   return defineTool({
     name: SEARCH_TOOL,
     label: "Search messages",
@@ -48,7 +49,8 @@ export function createSearchMessagesTool(store: MessageStore, groupId: string, i
               // nicknames and text are written by group members: escape them like in the group prompt
               const ids = images?.idsOf(groupId, h.messageId) ?? [];
               const pics = ids.length ? ` [图片: ${ids.map(imageRef).join(",")}]` : "";
-              return `[${when}] ${escapeText(h.nickname)} (${h.userId}): ${escapeText(body)}${pics}`;
+              const files = (h.fileIds ?? []).flatMap((id) => { const row = uploads?.get(groupId, id); return row ? [" " + escapeText(uploadSummary(row))] : []; }).join("");
+              return `[${when}] ${escapeText(h.nickname)} (${h.userId}): ${escapeText(body)}${pics}${files}`;
             })
             .join("\n")
         : "No matching messages.";
